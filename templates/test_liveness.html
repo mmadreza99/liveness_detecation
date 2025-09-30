@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Liveness Detection Test</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
+    video { border: 2px solid #444; border-radius: 10px; }
+    #result { font-size: 20px; font-weight: bold; margin-top: 15px; }
+  </style>
+</head>
+<body>
+  <h2>🔍 Test Face Liveness Detection</h2>
+  <video id="video" width="400" height="300" autoplay></video>
+  <canvas id="canvas" width="400" height="300" style="display:none;"></canvas>
+  <p id="result">⏳ Waiting for result...</p>
+
+  <script>
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const result = document.getElementById("result");
+
+    // گرفتن دسترسی به وبکم
+    navigator.mediaDevices.getUserMedia({ video: true })
+      .then(stream => { video.srcObject = stream; })
+      .catch(err => { console.error("Camera error:", err); });
+
+    // ارسال فریم به سرور هر 1 ثانیه
+    setInterval(() => {
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const frame = canvas.toDataURL("image/jpeg");
+
+      fetch("/check_frame/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
+        body: JSON.stringify({ image: frame })
+      })
+      .then(res => res.json())
+      .then(data => {
+        result.innerText = data.status;
+        if (data.status.includes("Alive")) {
+          result.style.color = "green";
+        } else if (data.status.includes("Spoofing")) {
+          result.style.color = "red";
+        } else {
+          result.style.color = "orange";
+        }
+      })
+      .catch(err => console.error(err));
+    }, 1000);
+
+    // گرفتن CSRF Token برای درخواست POST در Django
+    function getCookie(name) {
+      let cookieValue = null;
+      if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+          const cookie = cookies[i].trim();
+          if (cookie.substring(0, name.length + 1) === (name + '=')) {
+            cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+            break;
+          }
+        }
+      }
+      return cookieValue;
+    }
+  </script>
+</body>
+</html>
