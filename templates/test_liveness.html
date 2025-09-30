@@ -2,69 +2,119 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Liveness Detection Test</title>
+  <title>Liveness & Face Verification Test</title>
   <style>
-    body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
-    video { border: 2px solid #444; border-radius: 10px; }
-    #result { font-size: 20px; font-weight: bold; margin-top: 15px; }
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    video { border: 2px solid #444; border-radius: 8px; }
+    #status { font-size: 18px; margin-top: 10px; font-weight: bold; }
+    button { margin: 10px 5px; padding: 10px 15px; }
+    canvas { display: none; }
+    .box { margin-top: 20px; padding: 15px; border: 1px solid #aaa; border-radius: 8px; }
   </style>
 </head>
 <body>
-  <h2>🔍 Test Face Liveness Detection</h2>
+
+  <h2>🎥 Liveness Detection & Passport Verification</h2>
+
+  <!-- Video stream -->
   <video id="video" width="400" height="300" autoplay></video>
-  <canvas id="canvas" width="400" height="300" style="display:none;"></canvas>
-  <p id="result">⏳ Waiting for result...</p>
+  <canvas id="canvas" width="400" height="300"></canvas>
+
+  <div id="status">Status: ⏳ Waiting...</div>
+
+  <div class="box">
+    <h3>📷 Passport & Live Photo Verification</h3>
+    <input type="file" id="passportInput" accept="image/*"><br>
+    <button id="captureLiveBtn">Capture Live Photo</button>
+    <button id="verifyBtn">Verify Passport vs Live</button>
+    <div id="verifyResult"></div>
+  </div>
 
   <script>
     const video = document.getElementById("video");
     const canvas = document.getElementById("canvas");
-    const result = document.getElementById("result");
+    const ctx = canvas.getContext("2d");
+    const statusEl = document.getElementById("status");
 
-    // گرفتن دسترسی به وبکم
+    let passportBase64 = null;
+    let liveBase64 = null;
+
+    // --- Get webcam access ---
     navigator.mediaDevices.getUserMedia({ video: true })
-      .then(stream => { video.srcObject = stream; })
-      .catch(err => { console.error("Camera error:", err); });
+      .then(stream => {
+        video.srcObject = stream;
+      })
+      .catch(err => {
+        alert("Camera access denied: " + err);
+      });
 
-    // ارسال فریم به سرور هر 1 ثانیه
-    setInterval(() => {
-      const ctx = canvas.getContext("2d");
+    // --- Helper: convert canvas to base64 ---
+    function getFrameBase64() {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const frame = canvas.toDataURL("image/jpeg");
+      return canvas.toDataURL("image/jpeg", 0.8); // quality=80%
+    }
 
+    // --- Periodically send frames to /check_frame ---
+    setInterval(() => {
+      const frameData = getFrameBase64();
       fetch("/check_frame/", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
-        body: JSON.stringify({ image: frame })
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: frameData })
       })
       .then(res => res.json())
       .then(data => {
-        result.innerText = data.status;
-        if (data.status.includes("Alive")) {
-          result.style.color = "green";
-        } else if (data.status.includes("Spoofing")) {
-          result.style.color = "red";
-        } else {
-          result.style.color = "orange";
+        if (data.status) {
+          statusEl.innerText = "Status: " + data.status;
         }
       })
-      .catch(err => console.error(err));
-    }, 1000);
+      .catch(err => console.error("Error:", err));
+    }, 1000); // every 1000 ms
 
-    // گرفتن CSRF Token برای درخواست POST در Django
-    function getCookie(name) {
-      let cookieValue = null;
-      if (document.cookie && document.cookie !== '') {
-        const cookies = document.cookie.split(';');
-        for (let i = 0; i < cookies.length; i++) {
-          const cookie = cookies[i].trim();
-          if (cookie.substring(0, name.length + 1) === (name + '=')) {
-            cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-            break;
-          }
-        }
+    // --- Handle passport file upload ---
+    document.getElementById("passportInput").addEventListener("change", function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        passportBase64 = evt.target.result; // base64 string
+        alert("✅ Passport photo loaded.");
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // --- Capture live photo for verification ---
+    document.getElementById("captureLiveBtn").addEventListener("click", () => {
+      liveBase64 = getFrameBase64();
+      alert("✅ Live photo captured.");
+    });
+
+    // --- Verify passport vs live photo ---
+    document.getElementById("verifyBtn").addEventListener("click", () => {
+      if (!passportBase64 || !liveBase64) {
+        alert("Please upload passport photo and capture live photo first.");
+        return;
       }
-      return cookieValue;
-    }
+
+      fetch("/upload_passport_and_verify/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          passport_image: passportBase64,
+          live_image: liveBase64
+        })
+      })
+      .then(res => res.json())
+      .then(data => {
+        document.getElementById("verifyResult").innerText =
+          "Match: " + data.match +
+          " | Distance: " + data.distance.toFixed(3) +
+          " | Liveness hint: " + data.liveness_hint;
+      })
+      .catch(err => console.error("Error:", err));
+    });
   </script>
+
 </body>
 </html>
