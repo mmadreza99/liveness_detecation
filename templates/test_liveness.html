@@ -1,281 +1,141 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fa" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Liveness Detection</title>
-    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
         body {
-            background-color: #f3f4f6;
-            font-family: 'Arial', sans-serif;
-        }
-        #status {
-            transition: all 0.3s ease;
-        }
-        #video, #liveCanvas {
-            border: 2px solid #e5e7eb;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-        .button {
-            transition: background-color 0.3s ease, transform 0.2s ease;
-        }
-        .button:hover {
-            transform: scale(1.05);
-        }
-        .error {
-            color: #dc2626;
-            font-weight: bold;
-        }
-        .success {
-            color: #16a34a;
-            font-weight: bold;
-        }
-        .warning {
-            color: #d97706;
-            font-weight: bold;
-        }
-        #guide {
+            font-family: Arial, sans-serif;
             text-align: center;
-            margin: 1rem 0;
+            margin: 20px;
         }
-        #guide img {
-            max-width: 200px;
-            height: auto;
+        video {
+            width: 320px;
+            height: 240px;
+            border: 1px solid #ccc;
+            margin: 10px;
         }
-        /* اضافه کردن استایل برای اندازه‌های کوچک‌تر */
-        .video-container {
-            position: relative;
-            width: 480px;
-            height: 360px;
-            margin: 0 auto;
+        #instruction {
+            font-size: 18px;
+            margin: 20px;
+            color: #333;
         }
-        #video, #liveCanvas {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
+        button {
+            padding: 10px 20px;
+            margin: 10px;
+            font-size: 16px;
         }
     </style>
 </head>
-<body class="flex items-center justify-center min-h-screen">
-    <div class="bg-white p-8 rounded-lg shadow-lg max-w-2xl w-full">
-        <h1 class="text-3xl font-bold text-center mb-6 text-gray-800">Liveness Detection</h1>
-        <p class="text-center text-gray-600 mb-4">Attempts remaining: <span id="attempts">3</span></p>
+<body>
+    <h1>Liveness Detection</h1>
+    <p>Attempts remaining: 3</p>
 
-        <!-- تغییر: اضافه کردن کانتینر برای ویدیو با اندازه کوچک‌تر -->
-        <div class="video-container mb-4">
-            <video id="video" autoplay playsinline></video>
-            <canvas id="liveCanvas" class="hidden"></canvas>
-        </div>
-
-        <div id="guide">
-            <img src="https://cms-assets.tutsplus.com/cdn-cgi/image/width=360/uploads/users/1112/posts/26487/image/animate-head-turn-straight.gif" alt="Animated head turning">
-            <p class="text-gray-700 mt-2">سر خود را به چپ و راست بچرخانید و پلک بزنید</p>
-        </div>
-        <div class="flex justify-center space-x-4 mb-4">
-            <button id="startLivenessButton" class="button bg-blue-600 text-white px-6 py-2 rounded-md">Start Liveness Check</button>
-            <button id="resetButton" class="button bg-gray-600 text-white px-6 py-2 rounded-md hidden">Reset</button>
-        </div>
-        <p id="status" class="text-center text-lg"></p>
+    <div>
+        <video id="video" autoplay playsinline></video>
     </div>
 
+    <div id="instruction">در حال بارگذاری دستور...</div>
+
+    <button id="startBtn">Start Liveness Check</button>
+    <button id="resetBtn">Reset</button>
+    <div id="status"></div>
+
+
     <script>
-        // DOM elements
         const video = document.getElementById('video');
-        const liveCanvas = document.getElementById('liveCanvas');
-        const startLivenessButton = document.getElementById('startLivenessButton');
-        const resetButton = document.getElementById('resetButton');
-        const statusDisplay = document.getElementById('status');
-        const attemptsDisplay = document.getElementById('attempts');
+        const startBtn = document.getElementById('startBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const instructionDiv = document.getElementById('instruction');
+        const statusDiv = document.getElementById('status');
+        let stream;
+        let intervalId;
+        const canvas = document.createElement('canvas');
 
-        // State variables
-        let stream = null;
-        let attemptsLeft = 3;
-        let isChecking = false;
-        let isVideoReady = false; // تغییر: اضافه کردن فلگ برای آماده بودن ویدیو
-
-        // تغییر: تنظیم اندازه کانواس و ویدیو به اندازه کوچک‌تر
-        const VIDEO_WIDTH = 480;
-        const VIDEO_HEIGHT = 360;
-
-        /**
-         * Start video stream from webcam.
-         */
-        async function startVideo() {
-            // Ensure any existing stream is stopped
-            stopVideo();
-
+        // Function to start webcam
+        async function startWebcam() {
             try {
-                stream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        width: { ideal: VIDEO_WIDTH },
-                        height: { ideal: VIDEO_HEIGHT }
-                    }
-                });
+                stream = await navigator.mediaDevices.getUserMedia({ video: true });
                 video.srcObject = stream;
-
-                // تغییر: تنظیم اندازه کانواس
-                liveCanvas.width = VIDEO_WIDTH;
-                liveCanvas.height = VIDEO_HEIGHT;
-
-                video.classList.remove('hidden');
-                liveCanvas.classList.add('hidden');
-
-                // تغییر: منتظر ماندن برای لود شدن ویدیو
-                return new Promise((resolve) => {
-                    video.onloadedmetadata = () => {
-                        isVideoReady = true;
-                        statusDisplay.textContent = 'Camera is ready. Click "Start Liveness Check" to begin.';
-                        statusDisplay.classList.remove('error');
-                        resolve();
-                    };
-
-                    // تغییر: تایم‌اوت برای مواردی که ویدیو لود نمی‌شود
-                    setTimeout(() => {
-                        if (!isVideoReady) {
-                            statusDisplay.textContent = 'Camera is taking longer than expected to load...';
-                            statusDisplay.classList.add('warning');
-                            isVideoReady = true; // اجازه دادن به کاربر برای امتحان کردن
-                            resolve();
-                        }
-                    }, 3000);
-                });
-
             } catch (err) {
-                statusDisplay.textContent = `Error accessing webcam: ${err.message}. Please ensure camera permissions are granted.`;
-                if (err.name === 'NotAllowedError') {
-                    statusDisplay.textContent += ' Camera access denied. Please allow camera access in browser settings.';
-                }
-                statusDisplay.classList.add('error');
-                throw err;
+                console.error("Error accessing webcam:", err);
+                alert("Unable to access webcam.");
             }
         }
 
-        /**
-         * Stop video stream and clear video element.
-         */
-        function stopVideo() {
+        // Function to stop webcam and clear interval
+        function stopLiveness() {
             if (stream) {
                 stream.getTracks().forEach(track => track.stop());
-                video.srcObject = null;
-                stream = null;
             }
-            isVideoReady = false;
+            if (intervalId) {
+                clearInterval(intervalId);
+            }
+            video.srcObject = null;
+            instructionDiv.innerText = "در حال بارگذاری دستور...";
         }
 
-        /**
-         * Capture frame from video and send to server for liveness check.
-         */
-        async function checkFrame() {
-            if (!isChecking) return;
-
-            // تغییر: بررسی اینکه ویدیو آماده است
-            if (!isVideoReady || video.readyState !== 4) {
-                statusDisplay.textContent = 'Camera is not ready yet. Please wait...';
-                statusDisplay.classList.add('warning');
-                setTimeout(checkFrame, 500);
-                return;
-            }
-
-            const ctx = liveCanvas.getContext('2d');
-            ctx.drawImage(video, 0, 0, liveCanvas.width, liveCanvas.height);
-            const imageData = liveCanvas.toDataURL('image/jpeg', 0.8);
-
+        // Function to get initial instruction
+        async function getInstruction() {
             try {
                 const response = await fetch('/check_frame/', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ image: imageData })
+                    body: JSON.stringify({ get_instruction: true })
                 });
-                const result = await response.json();
-                if (result.status && result.status !== 'Processing...') {
-                    statusDisplay.textContent = result.status;
-                    statusDisplay.classList.add(
-                        result.status.includes('Alive') ? 'success' :
-                        result.status.includes('Weak') ? 'warning' : 'error'
-                    );
-                    stopCheck();
-                    attemptsLeft--;
-                    attemptsDisplay.textContent = attemptsLeft;
-                    if (attemptsLeft <= 0) {
-                        startLivenessButton.disabled = true;
-                        startLivenessButton.classList.add('bg-gray-400', 'cursor-not-allowed');
-                        statusDisplay.textContent += ' - No attempts left';
-                        stopVideo();
-                    }
-                    resetButton.classList.remove('hidden');
-                } else {
-                    statusDisplay.textContent = result.status;
-                    setTimeout(checkFrame, 200);
-                }
+                const data = await response.json();
+                instructionDiv.innerText = data.instruction || "دستور موجود نیست";
+                statusDiv.innerText = data.print_status || " موجود نیست";
             } catch (err) {
-                statusDisplay.textContent = `Error: ${err.message}`;
-                statusDisplay.classList.add('error');
-                stopCheck();
-                resetButton.classList.remove('hidden');
+                console.error("Error fetching instruction:", err);
+                instructionDiv.innerText = "خطا در بارگذاری دستور";
             }
         }
 
-        /**
-         * Stop liveness checking and keep video running.
-         */
-        function stopCheck() {
-            isChecking = false;
-            liveCanvas.classList.add('hidden');
-            startLivenessButton.disabled = false;
-        }
+        // Function to send frames periodically
+        function startSendingFrames() {
+            intervalId = setInterval(async () => {
+                if (!video.videoWidth || !video.videoHeight) return;
 
-        // Start video when page loads
-        document.addEventListener('DOMContentLoaded', async () => {
-            try {
-                statusDisplay.textContent = 'Initializing camera...';
-                await startVideo();
-                startLivenessButton.disabled = false;
-            } catch {
-                startLivenessButton.disabled = true;
-                startLivenessButton.classList.add('bg-gray-400', 'cursor-not-allowed');
-            }
-        });
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                canvas.getContext('2d').drawImage(video, 0, 0);
+                const imgData = canvas.toDataURL('image/jpeg');
 
-        // Event listener for starting liveness check
-        startLivenessButton.addEventListener('click', async () => {
-            if (attemptsLeft <= 0) return;
-
-            // تغییر: بررسی آماده بودن ویدیو قبل از شروع
-            if (!isVideoReady) {
-                statusDisplay.textContent = 'Camera is not ready. Please wait...';
-                statusDisplay.classList.add('warning');
-                return;
-            }
-
-            startLivenessButton.disabled = true;
-            isChecking = true;
-            statusDisplay.textContent = 'Starting liveness check...';
-            statusDisplay.classList.remove('error', 'success', 'warning');
-            liveCanvas.classList.remove('hidden');
-
-            if (!stream) {
                 try {
-                    statusDisplay.textContent = 'Restarting camera...';
-                    await startVideo();
-                } catch {
-                    startLivenessButton.disabled = false;
-                    isChecking = false;
-                    return;
-                }
-            }
+                    const resp = await fetch('/check_frame/', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ image: imgData })
+                    });
+                    const resData = await resp.json();
+                    statusDiv.innerText = resData.print_status || " موجود نیست";
 
-            // تغییر: تأخیر کوتاه برای اطمینان از نمایش کانواس
-            setTimeout(checkFrame, 100);
+                    if (resData.status !== "Processing...") {
+                        alert(resData.status);
+                        if (resData.status.includes("Alive")) {
+                            stopLiveness();  // Stop after success
+                        }
+                    }
+                    if (resData.new_instruction) {
+                        instructionDiv.innerText = resData.new_instruction;
+                    }
+                } catch (err) {
+                    console.error("Error sending frame:", err);
+                }
+            }, 1000);  // Send every second
+        }
+
+        // Event listeners
+        startBtn.addEventListener('click', async () => {
+            await startWebcam();
+            await getInstruction();
+            startSendingFrames();
         });
 
-        // Event listener for resetting the interface
-        resetButton.addEventListener('click', () => {
-            stopCheck();
-            statusDisplay.textContent = '';
-            statusDisplay.classList.remove('error', 'success', 'warning');
-            resetButton.classList.add('hidden');
+        resetBtn.addEventListener('click', () => {
+            stopLiveness();
         });
     </script>
 </body>

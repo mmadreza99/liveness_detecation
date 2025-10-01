@@ -1,3 +1,4 @@
+import random  # برای انتخاب رندوم چالش
 import base64
 import json
 import re
@@ -28,13 +29,62 @@ RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 # Cache keys for state management
 LIVENESS_STATE_KEY = "liveness_state"
 
+
+# لیست چالش‌های رندوم
+CHALLENGES = [
+    # چالش‌های موجود
+    {
+        "instruction": "سر خود را به چپ و راست بچرخانید",
+        "type": "head_turn",
+        "threshold": 15.0  # حداقل تغییر yaw
+    },
+    {
+        "instruction": "چند بار پلک بزنید",
+        "type": "blink",
+        "threshold": 2  # حداقل تعداد پلک
+    },
+    {
+        "instruction": "لبخند بزنید",
+        "type": "smile",
+        "threshold": 0.3  # آستانه smile_ratio
+    },
+    # چالش‌های جدید
+    {
+        "instruction": "سر خود را بالا و پایین تکان دهید (مانند تایید)",
+        "type": "head_nod",
+        "threshold": 10.0  # حداقل تغییر pitch
+    },
+    {
+        "instruction": "زبان خود را بیرون بیاورید",
+        "type": "tongue_out",
+        "threshold": 1  # حداقل یک تشخیص
+    },
+    {
+        "instruction": "چشم چپ خود را ببندید",
+        "type": "close_left_eye",
+        "threshold": 0.25  # EAR چپ کمتر از آستانه، راست بیشتر
+    },
+    {
+        "instruction": "ابروهای خود را بالا ببرید",
+        "type": "raise_eyebrows",
+        "threshold": 0.05  # تغییر ارتفاع ابروها
+    }
+]
+
 def get_liveness_state():
-    """Retrieve or initialize liveness state from cache."""
     state = cache.get(LIVENESS_STATE_KEY, {
         "last_check": timezone.now() - timedelta(seconds=11),
         "blink_count": 0,
-        "recent_poses": []
+        "recent_poses": [],
+        "current_challenge": None,
+        "challenge_start": None,
+        "challenge_data": {}  # برای ذخیره داده‌های خاص چالش، مثل تعداد پلک‌ها یا تغییرات pose
     })
+    # اگر چالش جاری نباشد، یکی رندوم انتخاب کن
+    if state["current_challenge"] is None:
+        state["current_challenge"] = random.choice(CHALLENGES)
+        state["challenge_start"] = timezone.now()
+        state["challenge_data"] = {"blinks": 0, "pose_changes": []}  # ریست داده‌ها
     return state
 
 def update_liveness_state(state):
@@ -134,6 +184,32 @@ def estimate_head_pose(landmarks, img_w, img_h):
     except Exception:
         return (0, 0, 0)
 
+def detect_smile(landmarks):
+    # ساده: فاصله بین گوشه‌های دهان (landmarks 61 و 291) و ارتفاع دهان (78 و 308)
+    left = landmarks[61]
+    right = landmarks[291]
+    top = landmarks[78]
+    bottom = landmarks[308]
+    width = np.hypot(right.x - left.x, right.y - left.y)
+    height = np.hypot(bottom.x - top.x, bottom.y - top.y)
+    smile_ratio = height / width if width != 0 else 0
+    return smile_ratio < 0.2  # آستانه برای لبخند (می‌تونید تنظیم کنید)
+
+
+def detect_tongue(landmarks):
+    # ساده: چک فاصله landmarks زبان (اگر بیرون باشه، landmarks پایین‌تر می‌ره)
+    tongue_tip = landmarks[13]  # نوک زبان approximate
+    chin = landmarks[152]
+    distance = abs(tongue_tip.y - chin.y)
+    return distance > 0.1  # آستانه تنظیم‌شدنی
+
+def detect_raised_eyebrows(landmarks):
+    left_brow = landmarks[70].y  # ابرو چپ approximate
+    right_brow = landmarks[300].y  # ابرو راست
+    nose = landmarks[1].y
+    avg_brow_height = (left_brow + right_brow) / 2
+    return abs(avg_brow_height - nose) < 0.15  # آستانه برای بالا بودن
+
 @csrf_exempt
 def check_frame(request):
     """
@@ -146,6 +222,11 @@ def check_frame(request):
 
     try:
         data = json.loads(request.body)
+
+        if "get_instruction" in data:
+            state = get_liveness_state()
+            return JsonResponse({"instruction": state["current_challenge"]["instruction"]})
+
         img_data = data.get("image", "")
         if not img_data:
             return JsonResponse({"error": "No image provided"}, status=400)
@@ -173,42 +254,81 @@ def check_frame(request):
         if results.multi_face_landmarks:
             landmarks = results.multi_face_landmarks[0].landmark
 
-            # Calculate EAR for blink detection
+             # Calculate EAR for blink detection
             ear_left = eye_aspect_ratio(landmarks, LEFT_EYE)
             ear_right = eye_aspect_ratio(landmarks, RIGHT_EYE)
             ear = (ear_left + ear_right) / 2.0
-            if ear < 0.25:  # EAR threshold for blink
-                blink_count += 1
 
             # Estimate head pose and store
             pose = estimate_head_pose(landmarks, rgb.shape[1], rgb.shape[0])
             recent_poses.append(pose)
-            if len(recent_poses) > 6:
-                recent_poses.pop(0)
+
+            challenge = state["current_challenge"]
+            challenge_data = state["challenge_data"]
+
+            if challenge["type"] == "blink":
+                if ear < 0.25:
+                    challenge_data["blinks"] += 1
+            elif challenge["type"] == "head_turn":
+                challenge_data["pose_changes"].append(abs(pose[1]))  # yaw
+            elif challenge["type"] == "smile":
+                if detect_smile(landmarks):
+                    challenge_data["smiles_detected"] = challenge_data.get("smiles_detected", 0) + 1
+            elif challenge["type"] == "head_nod":
+                challenge_data["pose_changes"].append(abs(pose[0]))  # pitch به جای yaw
+            elif challenge["type"] == "tongue_out":
+                if detect_tongue(landmarks):
+                    challenge_data["detections"] = challenge_data.get("detections", 0) + 1
+            elif challenge["type"] == "raise_eyebrows":
+                if detect_tongue(landmarks):
+                    challenge_data["detections"] = challenge_data.get("detections", 0) + 1
+            elif challenge["type"] == "close_left_eye":
+                if ear_left < 0.25 and ear_right > 0.25:  # چپ بسته، راست باز
+                    challenge_data["detections"] = challenge_data.get("detections", 0) + 1
+            state["challenge_data"] = challenge_data
+
 
         # Update state
         state.update({"blink_count": blink_count, "recent_poses": recent_poses})
 
         # Check liveness every 10 seconds
         if (now - last_check).seconds > 10:
-            yaw_vals = [abs(p[1]) for p in recent_poses if p is not None]
-            movement_ok = len(yaw_vals) >= 2 and (max(yaw_vals) - min(yaw_vals)) > 1.5
+            challenge = state["current_challenge"]
+            challenge_data = state["challenge_data"]
+            success = False
 
-            if blink_count > 0 and movement_ok:
-                status = "✅ Alive"
-            elif blink_count > 0:
-                status = "⚠️ Weak (blink-only) - further checks needed"
+            if challenge["type"] == "blink":
+                success = challenge_data["blinks"] >= challenge["threshold"]
+            elif challenge["type"] == "head_turn":
+                yaw_changes = challenge_data["pose_changes"]
+                success = len(yaw_changes) >= 2 and (max(yaw_changes) - min(yaw_changes)) > challenge["threshold"]
+            elif challenge["type"] == "smile":
+                success = challenge_data.get("smiles_detected", 0) > 0
+            elif challenge["type"] == "head_nod":
+                pitch_changes = challenge_data["pose_changes"]
+                success = len(pitch_changes) >= 2 and (max(pitch_changes) - min(pitch_changes)) > challenge["threshold"]
+            elif challenge["type"] == "tongue_out":
+                success = challenge_data.get("detections", 0) >= challenge["threshold"]
+            elif challenge["type"] == "raise_eyebrows":
+                success = challenge_data.get("detections", 0) >= challenge["threshold"]
+
+            if success:
+                status = "✅ Alive - Challenge completed"
+                # چالش جدید برای جلوگیری از replay
+                state["current_challenge"] = random.choice(CHALLENGES)
+                state["challenge_start"] = now
+                state["challenge_data"] = {"blinks": 0, "pose_changes": []}
             else:
-                status = "❌ Spoofing suspected"
+                status = "❌ Spoofing suspected - Challenge failed"
 
-            # Reset state and update cache
+            # ریست بقیه state
             state.update({"last_check": now, "blink_count": 0, "recent_poses": []})
             update_liveness_state(state)
-            return JsonResponse({"status": status})
+            return JsonResponse({"status": status, "new_instruction": state["current_challenge"]["instruction"] if success else ""})
 
         # Update state for next frame
         update_liveness_state(state)
-        return JsonResponse({"status": "Processing..."})
+        return JsonResponse({"status": "Processing..." })
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
