@@ -6,65 +6,200 @@
     <title>Liveness Detection</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
+            font-family: Tahoma, Arial, sans-serif;
             text-align: center;
             margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 20px;
         }
         video {
-            width: 320px;
-            height: 240px;
-            border: 1px solid #ccc;
-            margin: 10px;
+            width: 100%;
+            max-width: 400px;
+            height: auto;
+            border: 2px solid #3498db;
+            border-radius: 8px;
+            margin: 10px auto;
+            display: block;
+        }
+        .info-panel {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            text-align: right;
+        }
+        .status-section {
+            margin: 20px 0;
+        }
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            margin: 10px 0;
+            padding: 8px;
+            background: #f1f8ff;
+            border-radius: 5px;
+        }
+        .status-label {
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        .status-value {
+            color: #34495e;
         }
         #instruction {
             font-size: 18px;
             margin: 20px;
-            color: #333;
+            color: #e74c3c;
+            font-weight: bold;
+            min-height: 30px;
+        }
+        #countdown {
+            font-size: 24px;
+            font-weight: bold;
+            color: #e74c3c;
+            margin: 15px 0;
         }
         button {
-            padding: 10px 20px;
+            padding: 12px 25px;
             margin: 10px;
             font-size: 16px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        #startBtn {
+            background: #27ae60;
+            color: white;
+        }
+        #startBtn:hover {
+            background: #219a52;
+        }
+        #resetBtn {
+            background: #e74c3c;
+            color: white;
+        }
+        #resetBtn:hover {
+            background: #c0392b;
+        }
+        button:disabled {
+            background: #bdc3c7;
+            cursor: not-allowed;
+        }
+        .result {
+            margin: 15px 0;
+            padding: 15px;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .processing {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
         }
     </style>
 </head>
 <body>
-    <h1>Liveness Detection</h1>
-    <p>Attempts remaining: 3</p>
+    <div class="container">
+        <h1>تشخیص زنده‌بودن (Liveness Detection)</h1>
 
-    <div>
-        <video id="video" autoplay playsinline></video>
+        <div class="info-panel">
+            <div class="status-item">
+                <span class="status-label">تعداد تلاش‌های باقی‌مانده:</span>
+                <span class="status-value" id="attemptsCount">3</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">وضعیت دوربین:</span>
+                <span class="status-value" id="cameraStatus">غیرفعال</span>
+            </div>
+        </div>
+
+        <div>
+            <video id="video" autoplay playsinline></video>
+        </div>
+
+        <div id="countdown"></div>
+        <div id="instruction">لطفا دکمه شروع را فشار دهید</div>
+
+        <div class="status-section">
+            <div class="status-item">
+                <span class="status-label">وضعیت چالش:</span>
+                <span class="status-value" id="challengeStatus">آماده</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">پیشرفت:</span>
+                <span class="status-value" id="progressStatus">0%</span>
+            </div>
+        </div>
+
+        <div id="resultContainer"></div>
+
+        <button id="startBtn">شروع تشخیص زنده‌بودن</button>
+        <button id="resetBtn" disabled>بازنشانی</button>
     </div>
-
-    <div id="instruction">در حال بارگذاری دستور...</div>
-
-    <button id="startBtn">Start Liveness Check</button>
-    <button id="resetBtn">Reset</button>
-    <div id="status"></div>
-
 
     <script>
         const video = document.getElementById('video');
         const startBtn = document.getElementById('startBtn');
         const resetBtn = document.getElementById('resetBtn');
         const instructionDiv = document.getElementById('instruction');
-        const statusDiv = document.getElementById('status');
+        const countdownDiv = document.getElementById('countdown');
+        const resultContainer = document.getElementById('resultContainer');
+        const attemptsCount = document.getElementById('attemptsCount');
+        const cameraStatus = document.getElementById('cameraStatus');
+        const challengeStatus = document.getElementById('challengeStatus');
+        const progressStatus = document.getElementById('progressStatus');
+
         let stream;
         let intervalId;
+        let countdownInterval;
+        let remainingTime = 10;
+        let attempts = 3;
         const canvas = document.createElement('canvas');
 
         // Function to start webcam
         async function startWebcam() {
             try {
-                stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                cameraStatus.textContent = "در حال راه‌اندازی...";
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    }
+                });
                 video.srcObject = stream;
+                cameraStatus.textContent = "فعال";
+                return true;
             } catch (err) {
                 console.error("Error accessing webcam:", err);
-                alert("Unable to access webcam.");
+                cameraStatus.textContent = "خطا در دسترسی";
+                showResult("خطا در دسترسی به دوربین. لطفا مجوزها را بررسی کنید.", "error");
+                return false;
             }
         }
 
-        // Function to stop webcam and clear interval
+        // Function to stop webcam and clear intervals
         function stopLiveness() {
             if (stream) {
                 stream.getTracks().forEach(track => track.stop());
@@ -72,8 +207,33 @@
             if (intervalId) {
                 clearInterval(intervalId);
             }
+            if (countdownInterval) {
+                clearInterval(countdownInterval);
+            }
             video.srcObject = null;
-            instructionDiv.innerText = "در حال بارگذاری دستور...";
+            instructionDiv.textContent = "لطفا دکمه شروع را فشار دهید";
+            countdownDiv.textContent = "";
+            challengeStatus.textContent = "آماده";
+            progressStatus.textContent = "0%";
+            cameraStatus.textContent = "غیرفعال";
+            startBtn.disabled = false;
+            resetBtn.disabled = true;
+        }
+
+        // Function to update countdown
+        function updateCountdown() {
+            countdownDiv.textContent = `زمان باقی‌مانده: ${remainingTime} ثانیه`;
+            remainingTime--;
+
+            if (remainingTime < 0) {
+                clearInterval(countdownInterval);
+                countdownDiv.textContent = "زمان به پایان رسید!";
+            }
+        }
+
+        // Function to show results
+        function showResult(message, type) {
+            resultContainer.innerHTML = `<div class="result ${type}">${message}</div>`;
         }
 
         // Function to get initial instruction
@@ -85,11 +245,12 @@
                     body: JSON.stringify({ get_instruction: true })
                 });
                 const data = await response.json();
-                instructionDiv.innerText = data.instruction || "دستور موجود نیست";
-                statusDiv.innerText = data.print_status || " موجود نیست";
+                instructionDiv.textContent = data.instruction || "دستور موجود نیست";
+                return data.instruction;
             } catch (err) {
                 console.error("Error fetching instruction:", err);
-                instructionDiv.innerText = "خطا در بارگذاری دستور";
+                instructionDiv.textContent = "خطا در بارگذاری دستور";
+                return null;
             }
         }
 
@@ -110,32 +271,74 @@
                         body: JSON.stringify({ image: imgData })
                     });
                     const resData = await resp.json();
-                    statusDiv.innerText = resData.print_status || " موجود نیست";
 
-                    if (resData.status !== "Processing...") {
-                        alert(resData.status);
+                    // Update status based on response
+                    if (resData.status && resData.status !== "Processing...") {
+                        challengeStatus.textContent = resData.status.includes("Alive") ? "موفق" : "ناموفق";
+
                         if (resData.status.includes("Alive")) {
-                            stopLiveness();  // Stop after success
+                            showResult("✅ احراز هویت موفق - چالش با موفقیت تکمیل شد", "success");
+                            stopLiveness();
+                        } else {
+                            attempts--;
+                            attemptsCount.textContent = attempts;
+                            showResult("❌ تشخیص زنده‌بودن ناموفق - لطفا مجددا تلاش کنید", "error");
+
+                            if (attempts <= 0) {
+                                showResult("❌ تعداد تلاش‌های شما به پایان رسیده است", "error");
+                                stopLiveness();
+                            }
                         }
+                    } else {
+                        challengeStatus.textContent = "در حال پردازش...";
+                        showResult("در حال تشخیص زنده‌بودن... لطفا دستورالعمل را دنبال کنید", "processing");
                     }
+
+                    // Update progress (simulated)
+                    const progress = Math.min(100, Math.max(0, 100 - (remainingTime * 10)));
+                    progressStatus.textContent = `${progress}%`;
+
                     if (resData.new_instruction) {
-                        instructionDiv.innerText = resData.new_instruction;
+                        instructionDiv.textContent = resData.new_instruction;
                     }
                 } catch (err) {
                     console.error("Error sending frame:", err);
+                    showResult("خطا در ارسال داده به سرور", "error");
                 }
             }, 1000);  // Send every second
         }
 
         // Event listeners
         startBtn.addEventListener('click', async () => {
-            await startWebcam();
-            await getInstruction();
+            startBtn.disabled = true;
+            resetBtn.disabled = false;
+
+            const webcamStarted = await startWebcam();
+            if (!webcamStarted) {
+                startBtn.disabled = false;
+                return;
+            }
+
+            const instruction = await getInstruction();
+            if (!instruction) {
+                startBtn.disabled = false;
+                return;
+            }
+
+            // Reset and start countdown
+            remainingTime = 10;
+            updateCountdown();
+            countdownInterval = setInterval(updateCountdown, 1000);
+
             startSendingFrames();
         });
 
         resetBtn.addEventListener('click', () => {
             stopLiveness();
+            getInstruction();
+            resultContainer.innerHTML = "";
+            attempts = 3;
+            attemptsCount.textContent = attempts;
         });
     </script>
 </body>
