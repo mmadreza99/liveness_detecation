@@ -121,225 +121,219 @@
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>تشخیص زنده‌بودن (Liveness Detection)</h1>
+<div class="container">
+    <h1>تشخیص زنده‌بودن (Liveness Detection)</h1>
 
-        <div class="info-panel">
-            <div class="status-item">
-                <span class="status-label">تعداد تلاش‌های باقی‌مانده:</span>
-                <span class="status-value" id="attemptsCount">3</span>
-            </div>
-            <div class="status-item">
-                <span class="status-label">وضعیت دوربین:</span>
-                <span class="status-value" id="cameraStatus">غیرفعال</span>
-            </div>
+    <div class="info-panel">
+        <div class="status-item">
+            <span class="status-label">وضعیت دوربین:</span>
+            <span class="status-value" id="cameraStatus">غیرفعال</span>
         </div>
-
-        <div>
-            <video id="video" autoplay playsinline></video>
-        </div>
-
-        <div id="countdown"></div>
-        <div id="instruction">لطفا دکمه شروع را فشار دهید</div>
-
-        <div class="status-section">
-            <div class="status-item">
-                <span class="status-label">وضعیت چالش:</span>
-                <span class="status-value" id="challengeStatus">آماده</span>
-            </div>
-            <div class="status-item">
-                <span class="status-label">پیشرفت:</span>
-                <span class="status-value" id="progressStatus">0%</span>
-            </div>
-        </div>
-
-        <div id="resultContainer"></div>
-
-        <button id="startBtn">شروع تشخیص زنده‌بودن</button>
-        <button id="resetBtn" disabled>بازنشانی</button>
     </div>
 
-    <script>
-        const video = document.getElementById('video');
-        const startBtn = document.getElementById('startBtn');
-        const resetBtn = document.getElementById('resetBtn');
-        const instructionDiv = document.getElementById('instruction');
-        const countdownDiv = document.getElementById('countdown');
-        const resultContainer = document.getElementById('resultContainer');
-        const attemptsCount = document.getElementById('attemptsCount');
-        const cameraStatus = document.getElementById('cameraStatus');
-        const challengeStatus = document.getElementById('challengeStatus');
-        const progressStatus = document.getElementById('progressStatus');
+    <video id="video" autoplay playsinline></video>
+    <div id="countdown"></div>
+    <div id="instruction">برای شروع دکمه زیر را فشار دهید</div>
 
-        let stream;
-        let intervalId;
-        let countdownInterval;
-        let remainingTime = 10;
-        let attempts = 3;
-        const canvas = document.createElement('canvas');
+    <div class="status-section">
+        <div class="status-item">
+            <span class="status-label">وضعیت چالش:</span>
+            <span class="status-value" id="challengeStatus">آماده</span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">پیشرفت:</span>
+            <span class="status-value" id="progressStatus">0%</span>
+        </div>
+    </div>
 
-        // Function to start webcam
-        async function startWebcam() {
+    <div id="resultContainer"></div>
+
+    <button id="startBtn">شروع تشخیص زنده‌بودن</button>
+    <button id="resetBtn" disabled>بازنشانی</button>
+</div>
+
+<script>
+    const video = document.getElementById('video');
+    const startBtn = document.getElementById('startBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const instructionDiv = document.getElementById('instruction');
+    const countdownDiv = document.getElementById('countdown');
+    const resultContainer = document.getElementById('resultContainer');
+    const cameraStatus = document.getElementById('cameraStatus');
+    const challengeStatus = document.getElementById('challengeStatus');
+    const progressStatus = document.getElementById('progressStatus');
+
+    let stream;
+    let intervalId;
+    let countdownInterval;
+    let remainingTime = 10;
+    const canvas = document.createElement('canvas');
+
+    // Start webcam
+    async function startWebcam() {
+        try {
+            cameraStatus.textContent = "در حال راه‌اندازی...";
+            stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+            video.srcObject = stream;
+            cameraStatus.textContent = "فعال";
+            return true;
+        } catch (err) {
+            console.error("Error accessing webcam:", err);
+            cameraStatus.textContent = "خطا در دسترسی";
+            showResult("خطا در دسترسی به دوربین. لطفا مجوزها را بررسی کنید.", "error");
+            return false;
+        }
+    }
+
+    // Stop everything
+    function stopLiveness() {
+        if (stream) stream.getTracks().forEach(track => track.stop());
+        if (intervalId) clearInterval(intervalId);
+        if (countdownInterval) clearInterval(countdownInterval);
+        video.srcObject = null;
+        instructionDiv.textContent = "برای شروع دکمه زیر را فشار دهید";
+        countdownDiv.textContent = "";
+        challengeStatus.textContent = "آماده";
+        progressStatus.textContent = "0%";
+        cameraStatus.textContent = "غیرفعال";
+        startBtn.disabled = false;
+        resetBtn.disabled = true;
+        const response = fetch('/reset_attempts/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ get_instruction: true })
+            });
+
+    }
+
+    // Stop everything
+    function no_time() {
+        if (stream) stream.getTracks().forEach(track => track.stop());
+        if (intervalId) clearInterval(intervalId);
+        if (countdownInterval) clearInterval(countdownInterval);
+        video.srcObject = null;
+        instructionDiv.textContent = "برای شروع دکمه زیر را فشار دهید";
+        countdownDiv.textContent = "";
+        challengeStatus.textContent = "آماده";
+        progressStatus.textContent = "0%";
+        cameraStatus.textContent = "غیرفعال";
+        startBtn.disabled = false;
+        resetBtn.disabled = true;
+        const response = fetch('/reset_attempts/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ get_instruction: true })
+            });
+
+    }
+
+    // Countdown update
+    function updateCountdown() {
+        countdownDiv.textContent = `زمان باقی‌مانده: ${remainingTime} ثانیه`;
+        remainingTime--;
+        if (remainingTime < 0) {
+            clearInterval(countdownInterval);
+            countdownDiv.textContent = "زمان به پایان رسید!";
+        }
+    }
+
+    // Show result
+    function showResult(message, type) {
+        resultContainer.innerHTML = `<div class="result ${type}">${message}</div>`;
+    }
+
+    // Get random instruction from server
+    async function getInstruction() {
+        try {
+            const response = await fetch('/check_frame/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ get_instruction: true })
+            });
+            const data = await response.json();
+            instructionDiv.textContent = data.instruction || "دستور موجود نیست";
+            return data.instruction;
+        } catch (err) {
+            console.error("Error fetching instruction:", err);
+            instructionDiv.textContent = "خطا در بارگذاری دستور";
+            return null;
+        }
+    }
+
+    // Send frames periodically
+    function startSendingFrames() {
+        intervalId = setInterval(async () => {
+            if (!video.videoWidth || !video.videoHeight) return;
+
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            const imgData = canvas.toDataURL('image/jpeg');
+
             try {
-                cameraStatus.textContent = "در حال راه‌اندازی...";
-                stream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        width: { ideal: 640 },
-                        height: { ideal: 480 }
-                    }
-                });
-                video.srcObject = stream;
-                cameraStatus.textContent = "فعال";
-                return true;
-            } catch (err) {
-                console.error("Error accessing webcam:", err);
-                cameraStatus.textContent = "خطا در دسترسی";
-                showResult("خطا در دسترسی به دوربین. لطفا مجوزها را بررسی کنید.", "error");
-                return false;
-            }
-        }
-
-        // Function to stop webcam and clear intervals
-        function stopLiveness() {
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
-            }
-            if (intervalId) {
-                clearInterval(intervalId);
-            }
-            if (countdownInterval) {
-                clearInterval(countdownInterval);
-            }
-            video.srcObject = null;
-            instructionDiv.textContent = "لطفا دکمه شروع را فشار دهید";
-            countdownDiv.textContent = "";
-            challengeStatus.textContent = "آماده";
-            progressStatus.textContent = "0%";
-            cameraStatus.textContent = "غیرفعال";
-            startBtn.disabled = false;
-            resetBtn.disabled = true;
-        }
-
-        // Function to update countdown
-        function updateCountdown() {
-            countdownDiv.textContent = `زمان باقی‌مانده: ${remainingTime} ثانیه`;
-            remainingTime--;
-
-            if (remainingTime < 0) {
-                clearInterval(countdownInterval);
-                countdownDiv.textContent = "زمان به پایان رسید!";
-            }
-        }
-
-        // Function to show results
-        function showResult(message, type) {
-            resultContainer.innerHTML = `<div class="result ${type}">${message}</div>`;
-        }
-
-        // Function to get initial instruction
-        async function getInstruction() {
-            try {
-                const response = await fetch('/check_frame/', {
+                const resp = await fetch('/check_frame/', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ get_instruction: true })
+                    body: JSON.stringify({ image: imgData })
                 });
-                const data = await response.json();
-                instructionDiv.textContent = data.instruction || "دستور موجود نیست";
-                return data.instruction;
-            } catch (err) {
-                console.error("Error fetching instruction:", err);
-                instructionDiv.textContent = "خطا در بارگذاری دستور";
-                return null;
-            }
-        }
+                const resData = await resp.json();
 
-        // Function to send frames periodically
-        function startSendingFrames() {
-            intervalId = setInterval(async () => {
-                if (!video.videoWidth || !video.videoHeight) return;
-
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                canvas.getContext('2d').drawImage(video, 0, 0);
-                const imgData = canvas.toDataURL('image/jpeg');
-
-                try {
-                    const resp = await fetch('/check_frame/', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ image: imgData })
-                    });
-                    const resData = await resp.json();
-
-                    // Update status based on response
-                    if (resData.status && resData.status !== "Processing...") {
-                        challengeStatus.textContent = resData.status.includes("Alive") ? "موفق" : "ناموفق";
-
-                        if (resData.status.includes("Alive")) {
-                            showResult("✅ احراز هویت موفق - چالش با موفقیت تکمیل شد", "success");
-                            stopLiveness();
-                        } else {
-                            attempts--;
-                            attemptsCount.textContent = attempts;
-                            showResult("❌ تشخیص زنده‌بودن ناموفق - لطفا مجددا تلاش کنید", "error");
-
-                            if (attempts <= 0) {
-                                showResult("❌ تعداد تلاش‌های شما به پایان رسیده است", "error");
-                                stopLiveness();
-                            }
-                        }
+                if (resData.status && resData.status !== "Processing...") {
+                    challengeStatus.textContent = resData.status.includes("Alive") ? "موفق" : "ناموفق";
+                    if (resData.status.includes("Alive")) {
+                        showResult("✅ چالش با موفقیت انجام شد", "success");
+                        stopLiveness();
                     } else {
-                        challengeStatus.textContent = "در حال پردازش...";
-                        showResult("در حال تشخیص زنده‌بودن... لطفا دستورالعمل را دنبال کنید", "processing");
+                        stopLiveness();
+                        showResult("⚠️ چالش انجام نشد، لطفا دوباره تلاش کنید", "error");
                     }
-
-                    // Update progress (simulated)
-                    const progress = Math.min(100, Math.max(0, 100 - (remainingTime * 10)));
-                    progressStatus.textContent = `${progress}%`;
-
-                    if (resData.new_instruction) {
-                        instructionDiv.textContent = resData.new_instruction;
-                    }
-                } catch (err) {
-                    console.error("Error sending frame:", err);
-                    showResult("خطا در ارسال داده به سرور", "error");
+                } else {
+                    challengeStatus.textContent = "در حال پردازش...";
+                    showResult("در حال تشخیص زنده‌بودن... لطفا دستور را دنبال کنید", "processing");
                 }
-            }, 1000);  // Send every second
+
+                const progress = Math.min(100, Math.max(0, 100 - (remainingTime * 10)));
+                progressStatus.textContent = `${progress}%`;
+
+                if (resData.new_instruction) {
+                    instructionDiv.textContent = resData.new_instruction;
+                }
+            } catch (err) {
+                console.error("Error sending frame:", err);
+                showResult("خطا در ارسال داده به سرور", "error");
+            }
+        }, 1000);
+    }
+
+    // Start button
+    startBtn.addEventListener('click', async () => {
+        startBtn.disabled = true;
+        resetBtn.disabled = false;
+
+        const webcamStarted = await startWebcam();
+        if (!webcamStarted) {
+            startBtn.disabled = false;
+            return;
         }
 
-        // Event listeners
-        startBtn.addEventListener('click', async () => {
-            startBtn.disabled = true;
-            resetBtn.disabled = false;
+        const instruction = await getInstruction();
+        if (!instruction) {
+            startBtn.disabled = false;
+            return;
+        }
 
-            const webcamStarted = await startWebcam();
-            if (!webcamStarted) {
-                startBtn.disabled = false;
-                return;
-            }
+        remainingTime = 10;
+        updateCountdown();
+        countdownInterval = setInterval(updateCountdown, 1000);
+        startSendingFrames();
+    });
 
-            const instruction = await getInstruction();
-            if (!instruction) {
-                startBtn.disabled = false;
-                return;
-            }
-
-            // Reset and start countdown
-            remainingTime = 10;
-            updateCountdown();
-            countdownInterval = setInterval(updateCountdown, 1000);
-
-            startSendingFrames();
-        });
-
-        resetBtn.addEventListener('click', () => {
-            stopLiveness();
-            getInstruction();
-            resultContainer.innerHTML = "";
-            attempts = 3;
-            attemptsCount.textContent = attempts;
-        });
-    </script>
+    // Reset button
+    resetBtn.addEventListener('click', () => {
+        stopLiveness();
+        getInstruction();
+        resultContainer.innerHTML = "";
+    });
+</script>
 </body>
 </html>

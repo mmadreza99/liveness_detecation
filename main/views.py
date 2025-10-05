@@ -6,17 +6,15 @@ import numpy as np
 import cv2
 import mediapipe as mp
 import face_recognition
-from django.http import JsonResponse, HttpResponse
+from django.http import JsonResponse
 from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.core.cache import cache
-from datetime import timedelta
 
+import textwrap
 import os
 import uuid
-import io
-import base64
 
 # Directory to save debug/annotated images (ensure it's writable)
 DEBUG_DIR = "/tmp/liveness_debug"
@@ -42,45 +40,43 @@ ATTEMPTS_KEY = "liveness_attempts"
 # چالش‌های تشخیص زنده‌بودن
 CHALLENGES = [
     {
-        "instruction": "سر خود را به چپ و راست بچرخانید",
+        # "instruction": "سر خود را به چپ و راست بچرخانید",
+        "instruction": "head_turn",
         "type": "head_turn",
-        "threshold": 15.0
+        "threshold": 25.0
     },
-    {
-        "instruction": "چند بار پلک بزنید",
-        "type": "blink",
-        "threshold": 2
-    },
-    {
-        "instruction": "سر خود را بالا و پایین تکان دهید",
-        "type": "head_nod",
-        "threshold": 10.0
-    },
-    {
-        "instruction": "ابروهای خود را بالا ببرید",
-        "type": "raise_eyebrows",
-        "threshold": 0.05
-    }
+    # {
+    #     # "instruction": "چند بار پلک بزنید",
+    #     "instruction": "blink",
+    #     "type": "blink",
+    #     "threshold": 3
+    # },
+    # {
+    #     "instruction": "سر خود را بالا و پایین تکان دهید",
+    #     "type": "head_nod",
+    #     "threshold": 10.0
+    # },
+    # {
+    #     "instruction": "ابروهای خود را بالا ببرید",
+    #     "type": "raise_eyebrows",
+    #     "threshold": 0.05
+    # }
 ]
 
 
 def get_liveness_state():
-    """Get or initialize liveness state with attempts tracking"""
+    """Get or initialize liveness state (no attempt limit)"""
     state = cache.get(LIVENESS_STATE_KEY, {
-        "last_check": timezone.now() - timedelta(seconds=11),
+        "last_check": timezone.now(),
         "blink_count": 0,
         "recent_poses": [],
         "current_challenge": None,
         "challenge_start": None,
         "challenge_data": {},
-        "attempts_remaining": 3
+        "debug_images": []
     })
 
-    # Initialize attempts if not present
-    if "attempts_remaining" not in state:
-        state["attempts_remaining"] = cache.get(ATTEMPTS_KEY, 3)
-
-    # Select new challenge if none is active
+    # Select a new challenge if none active
     if state["current_challenge"] is None:
         state["current_challenge"] = random.choice(CHALLENGES)
         state["challenge_start"] = timezone.now()
@@ -88,11 +84,9 @@ def get_liveness_state():
 
     return state
 
-
 def update_liveness_state(state):
     """Update liveness state in cache"""
-    cache.set(LIVENESS_STATE_KEY, state, timeout=120)  # 2 minutes TTL
-    cache.set(ATTEMPTS_KEY, state["attempts_remaining"], timeout=120)
+    cache.set(LIVENESS_STATE_KEY, state, timeout=120)
 
 
 def base64_to_image(b64str):
@@ -250,155 +244,159 @@ def annotate_landmarks_and_encode(rgb_img, landmarks=None, boxes=None, labels=No
 
 @csrf_exempt
 def check_frame(request):
-    """Endpoint to process video frames for liveness detection"""
+    """Process video frames for optimized liveness detection"""
     if request.method != "POST":
-        return JsonResponse({"error": "This endpoint accepts POST requests"}, status=405)
+        return JsonResponse({"error": "Only POST requests allowed"}, status=405)
 
     try:
         data = json.loads(request.body)
-
+        print('first touch')
+        # Get instruction
         if "get_instruction" in data:
             state = get_liveness_state()
-            return JsonResponse({
-                "instruction": state["current_challenge"]["instruction"],
-                "attempts_remaining": state["attempts_remaining"]
-            })
+            return JsonResponse({"instruction": state["current_challenge"]["instruction"]})
+        print('if "get_instruction" in data')
 
+        # Convert base64 → image
         img_data = data.get("image", "")
         if not img_data:
             return JsonResponse({"error": "No image provided"}, status=400)
+        print('img_data')
 
-        # Convert base64 to image
         rgb = base64_to_image(img_data)
         h, w = rgb.shape[:2]
-
-        # Resize if too large for optimization
-        max_dim = 800
-        if max(h, w) > max_dim:
-            scale = max_dim / max(h, w)
+        if max(h, w) > 800:
+            scale = 800 / max(h, w)
             rgb = cv2.resize(rgb, (int(w * scale), int(h * scale)))
 
-        # Get liveness state
         state = get_liveness_state()
-        last_check = state["last_check"]
-        recent_poses = state["recent_poses"]
         challenge = state["current_challenge"]
         challenge_data = state["challenge_data"]
-        attempts_remaining = state["attempts_remaining"]
+        recent_poses = state["recent_poses"]
 
-        # Process frame with FaceMesh
         results = global_face_mesh.process(rgb)
         now = timezone.now()
 
         if results.multi_face_landmarks:
+            print(f'find face : ')
             landmarks = results.multi_face_landmarks[0].landmark
-
-            # Calculate EAR for blink detection
-            ear_left = eye_aspect_ratio(landmarks, LEFT_EYE)
-            ear_right = eye_aspect_ratio(landmarks, RIGHT_EYE)
-            ear = (ear_left + ear_right) / 2.0
-
-            # Estimate head pose and store
-            pose = estimate_head_pose(landmarks, rgb.shape[1], rgb.shape[0])
-            recent_poses.append(pose)
-
-            # ... after computing ear, pose, etc (inside results.multi_face_landmarks)
-            boxes = []
-            labels = []
-            # optionally get face bounding box from landmarks (simple min/max)
-            xs = [int(p.x * rgb.shape[1]) for p in landmarks]
-            ys = [int(p.y * rgb.shape[0]) for p in landmarks]
-            left, right = min(xs), max(xs)
-            top, bottom = min(ys), max(ys)
-            boxes.append((top, left, bottom, right))
-            labels.append("face")
-
-            # prepare a list to collect debug images for this frame
-            debug_images = []
-
             if challenge["type"] == "blink":
-                if ear < 0.25:
+                # Calculate blink
+                ear = (eye_aspect_ratio(landmarks, LEFT_EYE) +
+                       eye_aspect_ratio(landmarks, RIGHT_EYE)) / 2.0
+                print('ear', ear)
+
+                if ear < 0.22:
                     challenge_data["blinks"] = challenge_data.get("blinks", 0) + 1
-                    # create annotated image for blink event
-                    ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, boxes=boxes, labels=labels,
-                                                        feature_name="blink")
-                    debug_images.append({"event": "blink", **ann})
+                    print('challenge_data["blinks"]', challenge_data["blinks"])
+                elif ear > 0.25:
+                    challenge_data["blinks_open"] = challenge_data.get("blinks_open", 0) + 1
+                    print('challenge_data["blinks_open"]', challenge_data["blinks_open"])
+                ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, feature_name="blink")
+                state["debug_images"].append(ann)
             elif challenge["type"] == "head_turn":
+                # Head pose estimation
+                pose = estimate_head_pose(landmarks, rgb.shape[1], rgb.shape[0])
+                recent_poses.append(pose)
+                print('poses', pose)
+
                 yaw = abs(pose[1])
-                challenge_data["pose_changes"] = challenge_data.get("pose_changes", [])
-                challenge_data["pose_changes"].append(yaw)
-                # save annotated image with yaw value as label
-                labels[0] = f"yaw: {yaw:.1f}"
-                ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, boxes=boxes, labels=labels,
+                labels = [f"yaw:{yaw:.1f}"]
+                ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, labels=labels,
                                                     feature_name="head_turn")
-                debug_images.append({"event": "head_turn", "yaw": yaw, **ann})
-            # ... similarly for other types
+                state["debug_images"].append(ann)
             elif challenge["type"] == "raise_eyebrows":
-                if detect_raised_eyebrows(landmarks):
-                    challenge_data["detections"] = challenge_data.get("detections", 0) + 1
-                    ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, boxes=boxes, labels=labels,
-                                                        feature_name="raise_eyebrows")
-                    debug_images.append({"event": "raise_eyebrows", **ann})
-            # store debug images into state (limit number to avoid bloat)
-            existing_dbg = state.get("debug_images", [])
-            existing_dbg.extend(debug_images)
-            # limit to latest 5 images
-            state["debug_images"] = existing_dbg[-5:]
-            state["challenge_data"] = challenge_data
+                pose = estimate_head_pose(landmarks, rgb.shape[1], rgb.shape[0])
+                yaw = abs(pose[1])
+                labels = [f"yaw:{yaw:.1f}"]
+                ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, labels=labels,
+                                                    feature_name="head_turn")
+                state["debug_images"].append(ann)
+        else:
+            print(f'not find face : ')
 
-        # Update state
-        state.update({"recent_poses": recent_poses})
-
-        # Check liveness every 10 seconds
-        if (now - last_check).seconds >= 10:
+        # Every 10s check success
+        if (now - state["last_check"]).seconds >= 10:
             success = False
-            new_instruction = ""
-
             if challenge["type"] == "blink":
-                success = challenge_data.get("blinks", 0) >= challenge["threshold"]
+                success = (challenge_data.get("blinks", 0) >= challenge["threshold"]
+                           and challenge_data.get("blinks_open", 0) >= challenge["threshold"])
+                print('result blink: ', challenge_data.get("blinks", 0), challenge_data.get("blinks_open", 0))
             elif challenge["type"] == "head_turn":
-                yaw_changes = challenge_data.get("pose_changes", [])
-                success = len(yaw_changes) >= 2 and (max(yaw_changes) - min(yaw_changes)) > challenge["threshold"]
-            elif challenge["type"] == "smile":
-                success = challenge_data.get("smiles_detected", 0) > 0
-            elif challenge["type"] == "head_nod":
-                pitch_changes = challenge_data.get("pose_changes", [])
-                success = len(pitch_changes) >= 2 and (max(pitch_changes) - min(pitch_changes)) > challenge["threshold"]
-            elif challenge["type"] in ["tongue_out", "raise_eyebrows", "close_left_eye"]:
-                success = challenge_data.get("detections", 0) >= challenge["threshold"]
+                yaw_changes = [p[1] for p in recent_poses]
+                if len(yaw_changes) >= 2:
+                    success = (max(yaw_changes) - min(yaw_changes)) > challenge["threshold"]
+                print(f'result head_turn: , len {len(yaw_changes)},threshold {max(yaw_changes) - min(yaw_changes)}')
+            elif challenge["type"] == "raise_eyebrows":
+                success = detect_raised_eyebrows(landmarks)
 
             if success:
-                status = "✅ Alive - Challenge completed successfully"
-                # Select new challenge
+                status = "✅ Alive - Challenge completed"
                 state["current_challenge"] = random.choice(CHALLENGES)
-                state["challenge_start"] = now
                 state["challenge_data"] = {"blinks": 0, "pose_changes": []}
                 new_instruction = state["current_challenge"]["instruction"]
             else:
-                attempts_remaining -= 1
-                status = f"❌ Challenge failed - {attempts_remaining} attempts remaining"
-                if attempts_remaining <= 0:
-                    status = "❌ Maximum attempts exceeded - Please try again later"
+                status = "⚠️ Challenge not detected - Try again"
+                new_instruction = challenge["instruction"]
 
-            # Reset state
             state.update({
                 "last_check": now,
                 "recent_poses": [],
-                "attempts_remaining": attempts_remaining
+                "challenge_data": challenge_data
             })
             update_liveness_state(state)
 
-            return JsonResponse({
-                "status": status,
-                "new_instruction": new_instruction,
-                "attempts_remaining": attempts_remaining
-            })
+            # --- build and save a summary image with steps and "percentage" info ---
+            try:
+                # create lines from state and challenge_data
+                lines = build_step_lines_from_state(state)
 
-        # Update state for next frame
+                # If we have some crude confidence/percentage we can calculate:
+                # example: for blink challenge compute percent = min(100, blinks/threshold*100)
+                perc_line = ""
+                if challenge["type"] == "blink":
+                    blinks = challenge_data.get("blinks", 0)
+                    pct = min(100, int((blinks / max(1, challenge["threshold"])) * 100))
+                    perc_line = f"Blink progress: {blinks}/{challenge['threshold']} ({pct}%)"
+                elif challenge["type"] == "head_turn":
+                    pcs = challenge_data.get("pose_changes", [])
+                    if pcs:
+                        # estimate percent by yaw delta vs threshold
+                        delta = (max(pcs) - min(pcs))
+                        pct = min(100, int((delta / max(1e-6, challenge["threshold"])) * 100))
+                        perc_line = f"Yaw delta: {delta:.1f}deg ({pct}%)"
+                if perc_line:
+                    lines.append(perc_line)
+
+                # pick an image to overlay (prefer last debug image if any)
+                img_for_overlay = None
+                if state.get("debug_images"):
+                    # load image from path if available
+                    last_dbg = state["debug_images"][-1]
+                    imgp = last_dbg.get("path")
+                    if imgp and os.path.exists(imgp):
+                        img_bgr = cv2.imread(imgp)
+                        if img_bgr is not None:
+                            img_for_overlay = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                # fallback to current frame rgb
+                if img_for_overlay is None:
+                    img_for_overlay = rgb
+
+                summary = save_summary_image(img_for_overlay, lines)
+                summary_path = summary["path"]
+            except Exception as ex:
+                # don't break main flow on failure to save debug image
+                summary_path = None
+
+
+            return JsonResponse({"status": status, "new_instruction": new_instruction})
+        print('Processing . . . ')
+
         update_liveness_state(state)
-        return JsonResponse({"status": "Processing...", "attempts_remaining": attempts_remaining})
+        return JsonResponse({"status": "Processing..."})
 
     except Exception as e:
+        print('error :', e)
         return JsonResponse({"error": str(e)}, status=500)
 
 
@@ -464,8 +462,98 @@ def liveness_test(request):
     return render(request, "test_liveness.html")
 
 
+@csrf_exempt
 def reset_attempts(request):
     """Reset attempts counter (for testing)"""
     cache.delete(LIVENESS_STATE_KEY)
     cache.delete(ATTEMPTS_KEY)
     return JsonResponse({"status": "Attempts reset successfully"})
+
+
+
+def save_summary_image(rgb_img, lines, filename=None):
+    """
+    Save a summary image with multiple text lines overlayed.
+    Returns: {"path": ..., "b64": ...}
+    """
+    # English inline comments as requested
+    # Convert to BGR for OpenCV drawing
+    vis = cv2.cvtColor(rgb_img.copy(), cv2.COLOR_RGB2BGR)
+    h, w = vis.shape[:2]
+
+    # Choose font and scale
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = max(0.5, min(w / 800.0, 1.2))
+    thickness = 1 if w < 1000 else 2
+
+    # Prepare background rectangle for text for readability
+    # compute text block height
+    line_height = int(24 * font_scale) + 6
+    block_height = line_height * len(lines) + 12
+    block_width = int(w * 0.9)
+    x0 = int(w * 0.05)
+    y0 = h - block_height - 10
+
+    # Draw semi-transparent rectangle
+    overlay = vis.copy()
+    cv2.rectangle(overlay, (x0 - 6, y0 - 6), (x0 + block_width + 6, y0 + block_height + 6), (0,0,0), -1)
+    alpha = 0.5
+    cv2.addWeighted(overlay, alpha, vis, 1 - alpha, 0, vis)
+
+    # Draw each line of text
+    y = y0 + 24
+    for i, line in enumerate(lines):
+        # wrap long lines
+        wrapped = textwrap.wrap(line, width=80)
+        for j, sub in enumerate(wrapped):
+            text_pos = (x0 + 6, y + j * line_height)
+            cv2.putText(vis, sub, text_pos, font, font_scale, (255,255,255), thickness, cv2.LINE_AA)
+        y += len(wrapped) * line_height
+
+    # unique filename
+    fname = filename or f"summary_{uuid.uuid4().hex[:8]}.jpg"
+    fpath = os.path.join(DEBUG_DIR, fname)
+
+    # encode and save
+    success, buf = cv2.imencode('.jpg', vis, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+    if not success:
+        raise RuntimeError("Failed to encode summary image")
+    with open(fpath, "wb") as f:
+        f.write(buf.tobytes())
+
+    b64str = "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode('utf-8')
+    return {"path": fpath, "b64": b64str}
+
+
+def build_step_lines_from_state(state):
+    """
+    Build a list of human-readable lines describing debug events + confidence percents
+    state: the liveness state dict (may contain 'debug_images' items saved earlier)
+    """
+    lines = []
+    # Add timestamp
+    lines.append(f"Time: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    # Attempts
+    lines.append(f"Attempts remaining: {state.get('attempts_remaining', 'N/A')}")
+    # Challenge
+    ch = state.get("current_challenge") or {}
+    lines.append(f"Challenge: {ch.get('instruction','-')} ({ch.get('type','-')})")
+
+    # Add per-event info from debug_images
+    dbg = state.get("debug_images", [])
+    if dbg:
+        lines.append("Events:")
+        for d in dbg[-5:]:
+            # try to include event and any yaw/conf/confidence keys
+            ev = d.get("event", "event")
+            info_parts = [ev]
+            if "yaw" in d:
+                info_parts.append(f"yaw={d['yaw']:.1f}")
+            if "confidence" in d:
+                info_parts.append(f"conf={d['confidence']}")
+            lines.append(" - " + ", ".join(info_parts))
+    else:
+        lines.append("Events: none captured")
+
+    # Add a short overall placeholder (more can be provided by callers)
+    return lines
