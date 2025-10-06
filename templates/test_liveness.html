@@ -122,7 +122,7 @@
 </head>
 <body>
 <div class="container">
-    <h1>تشخیص زنده‌بودن (Liveness Detection)</h1>
+    <h1>احراز هویت (Liveness Detection)</h1>
 
     <div class="info-panel">
         <div class="status-item">
@@ -203,7 +203,6 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ get_instruction: true })
             });
-
     }
 
     // Stop everything
@@ -224,7 +223,6 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ get_instruction: true })
             });
-
     }
 
     // Countdown update
@@ -302,7 +300,7 @@
                 console.error("Error sending frame:", err);
                 showResult("خطا در ارسال داده به سرور", "error");
             }
-        }, 1000);
+        }, 500);
     }
 
     // Start button
