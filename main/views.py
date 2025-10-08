@@ -51,7 +51,7 @@ CHALLENGES = [
     {
         "instruction": "ابروهای خود را بالا ببرید",
         "type": "raise_eyebrows",
-        "threshold": 0.03
+        "threshold": 0.025
     }
 ]
 
@@ -292,8 +292,8 @@ def check_frame(request):
         # Get instruction
         if "get_instruction" in data:
             state = get_liveness_state()
+            print(f'if "get_instruction" in data  : {state["current_challenge"]["instruction"]}')
             return JsonResponse({"instruction": state["current_challenge"]["instruction"]})
-        print('if "get_instruction" in data')
 
         # Convert base64 → image
         img_data = data.get("image", "")
@@ -312,6 +312,7 @@ def check_frame(request):
         challenge_data = state["challenge_data"]
         recent_poses = state["recent_poses"]
         result_raise_eyebrows = state["result_raise_eyebrows"]
+        print(f'check instruction  : {state["current_challenge"]["instruction"]}')
 
         results = global_face_mesh.process(rgb)
         now = timezone.now()

@@ -25,7 +25,7 @@
         }
         video {
             width: 100%;
-            max-width: 400px;
+            max-width: 460px;
             height: auto;
             border: 2px solid #3498db;
             border-radius: 8px;
@@ -173,7 +173,7 @@
     async function startWebcam() {
         try {
             cameraStatus.textContent = "در حال راه‌اندازی...";
-            stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+            stream = await navigator.mediaDevices.getUserMedia({ video: { width: 460, height: 640 } });
             video.srcObject = stream;
             cameraStatus.textContent = "فعال";
             return true;
