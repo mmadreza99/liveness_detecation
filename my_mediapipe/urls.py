@@ -21,6 +21,7 @@ urlpatterns = [
     #    path('admin/', admin.site.urls),
     path("reset_attempts/", views.reset_attempts, name="reset_attempts"),
     path("check_frame/", views.check_frame, name="check_frame"),
+    path("check_voice/", views.check_voice, name="check_voice"),
     path("upload_passport_and_verify/", views.upload_passport_and_verify, name="upload_passport_and_verify"),
     path("", views.liveness_test, name="liveness_test"),
 ]

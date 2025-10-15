@@ -1,4 +1,5 @@
 import os
+import tempfile
 import uuid
 import random
 import base64
@@ -13,7 +14,25 @@ from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.core.cache import cache
+from datetime import timedelta
 
+import difflib
+import sounddevice as sd
+from vosk import Model, KaldiRecognizer
+from langdetect import detect
+from my_mediapipe import settings
+
+base_dir = settings.BASE_DIR
+# 📦 مسیر مدل‌های vosk (خودت مدل‌ها رو دانلود و در این مسیر بذار)
+LANG_MODELS = {
+    "fa": f"{base_dir}/vosk_models/vosk-model-small-fa-0.5",     # فارسی
+    "en": f"{base_dir}/vosk_models/vosk-model-small-en-us-0.15",  # انگلیسی
+    "ar": f"{base_dir}/vosk_models/vosk-model-ar-0.22",           # عربی
+    "tr": f"{base_dir}/vosk_models/vosk-model-small-tr-0.3",      # ترکی
+}
+
+# 🧠 حافظه‌ی کش برای مدل‌ها (لود شدن فقط یک بار)
+_loaded_models = {}
 
 # Directory to save debug/annotated images (ensure it's writable)
 DEBUG_DIR = "/tmp/liveness_debug"
@@ -36,7 +55,8 @@ RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 LIVENESS_STATE_KEY = "liveness_state"
 ATTEMPTS_KEY = "liveness_attempts"
 
-# چالش‌های تشخیص زنده‌بودن
+SIMILARITY_THRESHOLD = 0.55
+
 CHALLENGES = [
     {
         "instruction": "سر خود را به چپ و راست بچرخانید",
@@ -61,26 +81,34 @@ class MyObject:
         self.y = y
 
 
-def get_liveness_state():
-    """Get or initialize liveness state (no attempt limit)"""
-    state = cache.get(LIVENESS_STATE_KEY, {
-        "last_check": timezone.now(),
+def create_challenge():
+    nonce = uuid.uuid4().hex
+    challenge = random.choice(CHALLENGES)
+    expires = timezone.now() + timedelta(seconds=15)  # کوتاه!
+    state = {
+        "nonce": nonce,
+        "challenge": challenge,
+        "expires": expires,
+        "frames": [],  # برای نگهداری summaries هر فریم
+        "landmark_variances": [],
+        "created": timezone.now(),
+        "attempts": 0,
+        "challenge_data":{},
         "blink_count": 0,
         "recent_poses": [],
-        "current_challenge": None,
-        "challenge_start": None,
-        "challenge_data": {},
         "debug_images": [],
-        "result_raise_eyebrows": []
-    })
-
-    # Select a new challenge if none active
-    if state["current_challenge"] is None:
-        state["current_challenge"] = random.choice(CHALLENGES)
-        state["challenge_start"] = timezone.now()
-        state["challenge_data"] = {"blinks": 0, "pose_changes": []}
-
+        "result_raise_eyebrows": [],
+    }
+    cache.set(f"liveness_ch_{nonce}", state, timeout=30)
     return state
+
+
+def get_instruction(request=None):
+    st = create_challenge()
+    return {"instruction": st["challenge"]["instruction"],
+            "nonce": st["nonce"],
+            "expires": st["expires"].isoformat(),
+            "read_text": "خودت را معرفی کن"}
 
 
 def update_liveness_state(state):
@@ -107,10 +135,10 @@ def base64_to_image(b64str):
 def eye_aspect_ratio(landmarks, eye_indices):
     """Compute Eye Aspect Ratio (EAR) from Mediapipe landmarks"""
     p1, p2, p3, p4, p5, p6 = [landmarks[i] for i in eye_indices]
-    A = np.hypot(p2.x - p6.x, p2.y - p6.y)
-    B = np.hypot(p3.x - p5.x, p3.y - p5.y)
-    C = np.hypot(p1.x - p4.x, p1.y - p4.y)
-    return (A + B) / (2.0 * C) if C != 0 else 0.0
+    a = np.hypot(p2.x - p6.x, p2.y - p6.y)
+    b = np.hypot(p3.x - p5.x, p3.y - p5.y)
+    c = np.hypot(p1.x - p4.x, p1.y - p4.y)
+    return (a + b) / (2.0 * c) if c != 0 else 0.0
 
 
 def estimate_head_pose(landmarks, img_w, img_h):
@@ -280,6 +308,18 @@ def annotate_landmarks_and_encode(rgb_img, landmarks=None, boxes=None, labels=No
     return {"b64": b64str, "path": fpath}
 
 
+def summarize_landmarks(landmarks):
+    # ساخت یک بردار خلاصه (مثال ساده)
+    xs = [lm.x for lm in landmarks]
+    ys = [lm.y for lm in landmarks]
+    return {
+       "mean_x": float(np.mean(xs)),
+       "mean_y": float(np.mean(ys)),
+       "var_x": float(np.var(xs)),
+       "var_y": float(np.var(ys))
+    }
+
+
 @csrf_exempt
 def check_frame(request):
     """Process video frames for optimized liveness detection"""
@@ -291,9 +331,9 @@ def check_frame(request):
         print('first touch')
         # Get instruction
         if "get_instruction" in data:
-            state = get_liveness_state()
-            print(f'if "get_instruction" in data  : {state["current_challenge"]["instruction"]}')
-            return JsonResponse({"instruction": state["current_challenge"]["instruction"]})
+            state = get_instruction(request)
+            print(f'if "get_instruction" in data  : {state["instruction"]}')
+            return JsonResponse(state)
 
         # Convert base64 → image
         img_data = data.get("image", "")
@@ -301,18 +341,27 @@ def check_frame(request):
             return JsonResponse({"error": "No image provided"}, status=400)
         print('img_data')
 
+        nonce = data.get("nonce")
+        if not nonce:
+            return JsonResponse({"error": "nonce required"}, status=400)
+
+        state = cache.get(f"liveness_ch_{nonce}")
+        if not state:
+            return JsonResponse({"error": "invalid or expired nonce"}, status=400)
+        if timezone.now() > state["expires"]:
+            return JsonResponse({"error": "nonce expired"}, status=400)
+
         rgb = base64_to_image(img_data)
         h, w = rgb.shape[:2]
         if max(h, w) > 800:
             scale = 800 / max(h, w)
             rgb = cv2.resize(rgb, (int(w * scale), int(h * scale)))
 
-        state = get_liveness_state()
-        challenge = state["current_challenge"]
+        challenge = state["challenge"]
         challenge_data = state["challenge_data"]
         recent_poses = state["recent_poses"]
         result_raise_eyebrows = state["result_raise_eyebrows"]
-        print(f'check instruction  : {state["current_challenge"]["instruction"]}')
+        print(f'check instruction  : {state["challenge"]["instruction"]}')
 
         results = global_face_mesh.process(rgb)
         now = timezone.now()
@@ -330,11 +379,12 @@ def check_frame(request):
                     challenge_data["blinks"] = challenge_data.get("blinks", 0) + 1
                     print('challenge_data["blinks"]', challenge_data["blinks"])
                     ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, feature_name=f"blink_close_{ear}")
+                    state["debug_images"].append(ann)
                 elif ear >= 0.23:
                     challenge_data["blinks_open"] = challenge_data.get("blinks_open", 0) + 1
                     print('challenge_data["blinks_open"]', challenge_data["blinks_open"])
                     ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, feature_name=f"blink_open_{ear}")
-                state["debug_images"].append(ann)
+                    state["debug_images"].append(ann)
             elif challenge["type"] == "head_turn":
                 # Head pose estimation
                 pose = estimate_head_pose(landmarks, rgb.shape[1], rgb.shape[0])
@@ -354,53 +404,116 @@ def check_frame(request):
                 ann = annotate_landmarks_and_encode(rgb,  landmarks=new_landmark ,labels=labels,
                                                     feature_name=f"raise_eyebrows-{avg_distance}")
                 state["debug_images"].append(ann)
+
+            # # وقتی فریم می‌آید:
+            # summary = summarize_landmarks(landmarks)
+            # # اگر هیچ فریمی قبلاً نبوده، append و ادامه؛
+            # # والا بررسی کنید که تغییر بین summary جدید و قبلی > threshold باشد
+            # prev = state["frames"][-1] if state["frames"] else None
+            # if prev:
+            #     delta = (
+            #             abs(summary["mean_y"] - prev["mean_y"])
+            #              + abs(summary["mean_x"] - prev["mean_x"])
+            #              + abs(summary["var_y"] - prev["var_y"])
+            #     )
+            #     # آستانه را برای حرکت واقعی تنظیم کنید (تست و تیون کنید)
+            #     print(f'deltal {delta}')
+            #     if delta < 0.0005:
+            #         # فریم خیلی شبیه فریم قبلی (احتمال replay/static)
+            #         state["landmark_variances"].append(0.0)
+            #     else:
+            #         state["landmark_variances"].append(delta)
+
+            # state["frames"].append(summary)
+            cache.set(f"liveness_ch_{nonce}", state, timeout=30)
         else:
             print(f'not find face : ')
 
         # Every 10s check success
-        if (now - state["last_check"]).seconds >= 10:
+        if (now - state["created"]).seconds >= 10:
             success = False
+            challenge_specific_success = False
+
             if challenge["type"] == "blink":
-                success = (challenge_data.get("blinks", 0) >= challenge["threshold"]
+                challenge_specific_success = (challenge_data.get("blinks", 0) >= challenge["threshold"]
                            and challenge_data.get("blinks_open", 0) >= challenge["threshold"])
                 print('result blink: ', challenge_data.get("blinks", 0), challenge_data.get("blinks_open", 0))
             elif challenge["type"] == "head_turn":
                 yaw_changes = [p[1] for p in recent_poses]
                 if len(yaw_changes) >= 2:
-                    success = (max(yaw_changes) - min(yaw_changes)) > challenge["threshold"]
+                    challenge_specific_success = (max(yaw_changes) - min(yaw_changes)) > challenge["threshold"]
                 print(f'result head_turn: , len {len(yaw_changes)},threshold {max(yaw_changes) - min(yaw_changes)}')
             elif challenge["type"] == "raise_eyebrows":
                 min_val = min(result_raise_eyebrows)
                 max_val = max(result_raise_eyebrows)
                 diff = max_val - min_val
 
-                success = diff > challenge["threshold"]
-                print(f'result {success} diff {diff:.4f} min_val-{min_val:.4f}-max_val_{max_val:.4f}')
+                challenge_specific_success = diff > challenge["threshold"]
+                print(f'result {challenge_specific_success} diff {diff:.4f} min_val-{min_val:.4f}-max_val_{max_val:.4f}')
 
             if success:
                 status = "✅ Alive - Challenge completed"
-                state["current_challenge"] = random.choice(CHALLENGES)
+                state["challenge"] = random.choice(CHALLENGES)
                 state["challenge_data"] = {"blinks": 0, "pose_changes": []}
-                new_instruction = state["current_challenge"]["instruction"]
+                new_instruction = state["challenge"]["instruction"]
             else:
                 status = "⚠️ Challenge not detected - Try again"
                 new_instruction = challenge["instruction"]
 
             state.update({
-                "last_check": now,
+                "created": now,
                 "recent_poses": [],
                 "challenge_data": challenge_data
             })
             update_liveness_state(state)
-            return JsonResponse({"status": status, "new_instruction": new_instruction})
+            return JsonResponse({"status": status,
+                                 "new_instruction": new_instruction,
+                                 })
         print('Processing . . . ')
 
         update_liveness_state(state)
-        return JsonResponse({"status": "Processing..."})
+        return JsonResponse({"status": "Processing...",
+                             "instruction": state["challenge"]["instruction"],
+                             "reading_text": "ino bekhone"})
 
     except Exception as e:
         print('error :', e)
-        return JsonResponse({"error": str(e)}, status=500)
+        return JsonResponse({"error": str(e),
+                                  "reading_text": "highi nagooo"}, status=500)
+
+
+@csrf_exempt
+def check_voice(request):
+    if request.method == "POST" and "audio" in request.FILES and "nonce" in request.POST:
+        audio_file = request.FILES["audio"]
+        user_lang = request.POST.get("lang", "auto")
+        nonce = request.POST.get("nonce", "")
+
+        state = cache.get(f"liveness_ch_{nonce}")
+        if not state:
+            return JsonResponse({"error": "invalid or expired nonce"}, status=400)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            for chunk in audio_file.chunks():
+                tmp.write(chunk)
+            tmp_path = tmp.name
+
+        recognized_text, similarity, lang = recognize_speech_auto(
+            state['text_to_read'], user_lang=user_lang, file_path=tmp_path
+        )
+        state['recognized_text'] = recognized_text
+        state['similarity'] = round(similarity, 2)
+        state['lang'] = lang
+        update_liveness_state(state)
+
+        return JsonResponse({
+            "recognized_text": recognized_text,
+            "similarity": round(similarity, 2),
+            "language": lang,
+            "status": "ok"
+        })
+
+    return JsonResponse({"error": "Invalid request"}, status=400)
 
 
 @csrf_exempt
@@ -435,7 +548,6 @@ def upload_passport_and_verify(request):
 
         # Compute similarity
         dist = np.linalg.norm(passport_enc - live_enc)
-        SIMILARITY_THRESHOLD = 0.55
         match = dist < SIMILARITY_THRESHOLD
 
         # Single-frame liveness check
@@ -471,3 +583,62 @@ def reset_attempts(request):
     cache.delete(LIVENESS_STATE_KEY)
     cache.delete(ATTEMPTS_KEY)
     return JsonResponse({"status": "Attempts reset successfully"})
+
+
+def get_vosk_model(lang_code):
+    """Load model from cache or disk"""
+    if lang_code in _loaded_models:
+        return _loaded_models[lang_code]
+
+    model_path = LANG_MODELS.get(lang_code)
+    if not model_path or not os.path.exists(model_path):
+        raise RuntimeError(f"❌ Model for '{lang_code}' not found")
+
+    print(f"🔄 Loading Vosk model for language: {lang_code}")
+    model = Model(model_path)
+    _loaded_models[lang_code] = model
+    return model
+
+
+def record_audio(duration=10, fs=16000):
+    """Record microphone audio for N seconds"""
+    print(f"🎙 Recording for {duration} seconds...")
+    recording = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='int16')
+    sd.wait()
+    return recording
+
+
+def recognize_speech_auto(text_to_read, user_lang=None, duration=10):
+    """
+    Record and recognize speech offline.
+    Automatically detects or uses user-specified language.
+    Returns recognized_text, similarity (0-1), language
+    """
+    try:
+        # 🌍 Determine language
+        lang = user_lang or detect(text_to_read)
+        if lang not in LANG_MODELS:
+            print(f"⚠️ Unsupported language detected: {lang}, defaulting to English")
+            lang = "en"
+
+        model = get_vosk_model(lang)
+
+        # 🎧 Record
+        audio = record_audio(duration)
+        recognizer = KaldiRecognizer(model, 16000)
+
+        recognizer.AcceptWaveform(audio.tobytes())
+        result = json.loads(recognizer.FinalResult())
+        recognized_text = result.get("text", "").strip()
+
+        # 🔤 Compare similarity
+        similarity = difflib.SequenceMatcher(None, text_to_read.lower(), recognized_text.lower()).ratio()
+
+        print(f"🗣 Recognized: {recognized_text}")
+        print(f"🔁 Similarity: {similarity:.2f}")
+
+        return recognized_text, similarity, lang
+
+    except Exception as e:
+        print(f"❌ Speech recognition failed: {e}")
+        return "", 0.0, user_lang or "unknown"

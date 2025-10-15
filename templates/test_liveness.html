@@ -25,7 +25,7 @@
         }
         video {
             width: 100%;
-            max-width: 460px;
+            max-width: 400px;
             height: auto;
             border: 2px solid #3498db;
             border-radius: 8px;
@@ -118,6 +118,16 @@
             color: #0c5460;
             border: 1px solid #bee5eb;
         }
+
+
+
+        /* Responsive scaling for mobile */
+        @media (max-width: 600px) {
+            .overlay {
+                width: 80%;
+                font-size: 14px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -130,10 +140,29 @@
             <span class="status-value" id="cameraStatus">غیرفعال</span>
         </div>
     </div>
+    <div class="info-panel">
+        <div class="read-item">
+            <span class="read-label">این متن رو با صدا بلند  بخوانید:</span>
+            <span class="read-value" id="readingText">***</span>
+        </div>
+    </div>
 
-    <video id="video" autoplay playsinline></video>
-    <div id="countdown"></div>
+    <div style="position: relative; display: inline-block;">
+      <video id="video" autoplay playsinline style="border-radius: 8px;"></video>
+    </div>
+
+    <div class="status-item" style="margin-top: 15px;">
+      <span class="status-label">زبان گفتار:</span>
+      <select id="languageSelect" class="status-value" style="padding: 6px; border-radius: 5px;">
+          <option value="auto">تشخیص خودکار</option>
+          <option value="fa" selected>فارسی 🇮🇷</option>
+          <option value="en">English 🇺🇸</option>
+          <option value="ar">العربية 🇸🇦</option>
+          <option value="tr">Türkçe 🇹🇷</option>
+      </select>
+    </div>
     <div id="instruction">برای شروع دکمه زیر را فشار دهید</div>
+    <div id="countdown"></div>
 
     <div class="status-section">
         <div class="status-item">
@@ -156,13 +185,19 @@
     const video = document.getElementById('video');
     const startBtn = document.getElementById('startBtn');
     const resetBtn = document.getElementById('resetBtn');
+    const languageSelect = document.getElementById('languageSelect');
     const instructionDiv = document.getElementById('instruction');
     const countdownDiv = document.getElementById('countdown');
     const resultContainer = document.getElementById('resultContainer');
     const cameraStatus = document.getElementById('cameraStatus');
     const challengeStatus = document.getElementById('challengeStatus');
     const progressStatus = document.getElementById('progressStatus');
+    const readingText = document.getElementById('readingText');
 
+    let mediaRecorder;
+    let audioChunks = [];
+    let currentNonce = null;
+    let expiresAt = null;
     let stream;
     let intervalId;
     let countdownInterval;
@@ -173,7 +208,13 @@
     async function startWebcam() {
         try {
             cameraStatus.textContent = "در حال راه‌اندازی...";
-            stream = await navigator.mediaDevices.getUserMedia({ video: { width: 460, height: 640 } });
+            stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                width: { ideal: window.innerWidth > 600 ? 640 : 320 },
+                height: { ideal: window.innerWidth > 600 ? 480 : 240 },
+                facingMode: "user"
+                }
+            });
             video.srcObject = stream;
             cameraStatus.textContent = "فعال";
             return true;
@@ -250,6 +291,10 @@
             });
             const data = await response.json();
             instructionDiv.textContent = data.instruction || "دستور موجود نیست";
+            currentNonce = data.nonce;
+            expiresAt = new Date(data.expires);
+            readingText.textContent = data.read_text || "****"
+            console.log( data.read_text)
             return data.instruction;
         } catch (err) {
             console.error("Error fetching instruction:", err);
@@ -260,19 +305,28 @@
 
     // Send frames periodically
     function startSendingFrames() {
+        let frameIndex = 0;
+
         intervalId = setInterval(async () => {
             if (!video.videoWidth || !video.videoHeight) return;
 
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
+            canvas.width = video.videoWidth; canvas.height = video.videoHeight;
             canvas.getContext('2d').drawImage(video, 0, 0);
             const imgData = canvas.toDataURL('image/jpeg');
+            const selectedLang = languageSelect.value;
 
+            const payload = {
+                image: imgData,
+                nonce: currentNonce,
+                client_time: new Date().toISOString(),
+                frame_index: frameIndex++,
+                lang: selectedLang
+            };
             try {
                 const resp = await fetch('/check_frame/', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ image: imgData })
+                    body: JSON.stringify(payload)
                 });
                 const resData = await resp.json();
 
@@ -282,8 +336,8 @@
                         showResult("✅ چالش با موفقیت انجام شد", "success");
                         stopLiveness();
                     } else {
-                        stopLiveness();
                         showResult("⚠️ چالش انجام نشد، لطفا دوباره تلاش کنید", "error");
+                        stopLiveness();
                     }
                 } else {
                     challengeStatus.textContent = "در حال پردازش...";
@@ -296,6 +350,9 @@
                 if (resData.new_instruction) {
                     instructionDiv.textContent = resData.new_instruction;
                 }
+                if (resData.instruction) {
+                    instructionDiv.textContent = resData.instruction;
+                }
             } catch (err) {
                 console.error("Error sending frame:", err);
                 showResult("خطا در ارسال داده به سرور", "error");
@@ -303,10 +360,45 @@
         }, 500);
     }
 
+    async function startVoiceChallenge() {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+        audioChunks = [];
+
+        mediaRecorder.addEventListener("dataavailable", e => {
+            audioChunks.push(e.data);
+        });
+
+        mediaRecorder.addEventListener("stop", async () => {
+            const audioBlob = new Blob(audioChunks, { type: "audio/wav" });
+            const formData = new FormData();
+            const selectedLang = languageSelect.value;
+
+            formData.append("audio", audioBlob, "voice.wav");
+            formData.append("lang", selectedLang);
+            formData.append("nonce", currentNonce);
+
+            const response = await fetch("/check_voice/", {
+                method: "POST",
+                body: formData
+            });
+
+            const data = await response.json();
+
+            alert(`Voice similarity: ${data.similarity * 100}%`);
+            console.log(`Voice similarity: ${data.similarity * 100}%`);
+        });
+
+        mediaRecorder.start();
+        alert("Recording started for 10 seconds...");
+        setTimeout(() => mediaRecorder.stop(), 6000);
+    }
+
     // Start button
     startBtn.addEventListener('click', async () => {
         startBtn.disabled = true;
         resetBtn.disabled = false;
+        languageSelect.disabled = true;
 
         const webcamStarted = await startWebcam();
         if (!webcamStarted) {
@@ -324,6 +416,7 @@
         updateCountdown();
         countdownInterval = setInterval(updateCountdown, 1000);
         startSendingFrames();
+        startVoiceChallenge();
     });
 
     // Reset button
@@ -331,7 +424,8 @@
         stopLiveness();
         getInstruction();
         resultContainer.innerHTML = "";
-    });
+        languageSelect.disabled = false;
+    })
 </script>
 </body>
 </html>
