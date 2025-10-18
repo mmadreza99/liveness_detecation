@@ -22,6 +22,10 @@ from vosk import Model, KaldiRecognizer
 from langdetect import detect
 from my_mediapipe import settings
 
+
+import whisper
+from difflib import SequenceMatcher
+
 base_dir = settings.BASE_DIR
 # 📦 مسیر مدل‌های vosk (خودت مدل‌ها رو دانلود و در این مسیر بذار)
 LANG_MODELS = {
@@ -75,6 +79,13 @@ CHALLENGES = [
     }
 ]
 
+
+# Load Whisper model once (برای سرعت)
+# tiny: سریع‌تر ولی دقت کمتر / base: دقت بالاتر ولی کندتر
+_model = whisper.load_model("tiny")
+
+
+
 class MyObject:
     def __init__(self, x, y ):
         self.x = x
@@ -98,6 +109,7 @@ def create_challenge():
         "recent_poses": [],
         "debug_images": [],
         "result_raise_eyebrows": [],
+        "read_text": "من یک نقاشی کشیدم."
     }
     cache.set(f"liveness_ch_{nonce}", state, timeout=30)
     return state
@@ -108,7 +120,7 @@ def get_instruction(request=None):
     return {"instruction": st["challenge"]["instruction"],
             "nonce": st["nonce"],
             "expires": st["expires"].isoformat(),
-            "read_text": "خودت را معرفی کن"}
+            "read_text": st["read_text"]}
 
 
 def update_liveness_state(state):
@@ -343,12 +355,14 @@ def check_frame(request):
 
         nonce = data.get("nonce")
         if not nonce:
+            print('no nonce')
             return JsonResponse({"error": "nonce required"}, status=400)
 
         state = cache.get(f"liveness_ch_{nonce}")
         if not state:
             return JsonResponse({"error": "invalid or expired nonce"}, status=400)
         if timezone.now() > state["expires"]:
+            print('expire')
             return JsonResponse({"error": "nonce expired"}, status=400)
 
         rgb = base64_to_image(img_data)
@@ -484,34 +498,48 @@ def check_frame(request):
 
 @csrf_exempt
 def check_voice(request):
+    """Handle voice verification for a liveness challenge"""
     if request.method == "POST" and "audio" in request.FILES and "nonce" in request.POST:
         audio_file = request.FILES["audio"]
         user_lang = request.POST.get("lang", "auto")
         nonce = request.POST.get("nonce", "")
 
+        # Retrieve state from cache
         state = cache.get(f"liveness_ch_{nonce}")
         if not state:
             return JsonResponse({"error": "invalid or expired nonce"}, status=400)
 
+        # Save uploaded audio temporarily
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
             for chunk in audio_file.chunks():
                 tmp.write(chunk)
             tmp_path = tmp.name
 
-        recognized_text, similarity, lang = recognize_speech_auto(
-            state['text_to_read'], user_lang=user_lang, file_path=tmp_path
-        )
-        state['recognized_text'] = recognized_text
-        state['similarity'] = round(similarity, 2)
-        state['lang'] = lang
-        update_liveness_state(state)
+        try:
+            # Recognize speech
+            recognized_text, similarity, lang = recognize_speech_auto(
+                tmp_path, state['read_text'], user_lang=user_lang
+            )
 
-        return JsonResponse({
-            "recognized_text": recognized_text,
-            "similarity": round(similarity, 2),
-            "language": lang,
-            "status": "ok"
-        })
+            # Update state
+            state.update({
+                "recognized_text": recognized_text,
+                "similarity": round(similarity, 2),
+                "lang": lang
+            })
+            update_liveness_state(state)
+
+            return JsonResponse({
+                "recognized_text": recognized_text,
+                "similarity": round(similarity, 2),
+                "language": lang,
+                "status": "ok"
+            })
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     return JsonResponse({"error": "Invalid request"}, status=400)
 
@@ -600,45 +628,47 @@ def get_vosk_model(lang_code):
     return model
 
 
-def record_audio(duration=10, fs=16000):
-    """Record microphone audio for N seconds"""
-    print(f"🎙 Recording for {duration} seconds...")
-    recording = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='int16')
-    sd.wait()
-    return recording
-
-
-def recognize_speech_auto(text_to_read, user_lang=None, duration=10):
+def recognize_speech_auto(audio_path, read_text, user_lang="auto"):
     """
-    Record and recognize speech offline.
-    Automatically detects or uses user-specified language.
-    Returns recognized_text, similarity (0-1), language
+    Recognize speech from audio (offline, Whisper) and compare it with expected text.
+
+    Args:
+        audio_path (str): path to the WAV file recorded from user.
+        read_text (str): target text user is expected to read aloud.
+        user_lang (str): optional language code ('auto', 'fa', 'en', 'ar', 'tr').
+
+    Returns:
+        tuple: (recognized_text, similarity_score, detected_language)
     """
     try:
-        # 🌍 Determine language
-        lang = user_lang or detect(text_to_read)
-        if lang not in LANG_MODELS:
-            print(f"⚠️ Unsupported language detected: {lang}, defaulting to English")
-            lang = "en"
+        # Detect or use provided language
+        lang_map = {
+            "fa": "fa",  # Persian
+            "en": "en",
+            "ar": "ar",
+            "tr": "tr"
+        }
+        language_code = None if user_lang == "auto" else lang_map.get(user_lang, "fa")
 
-        model = get_vosk_model(lang)
-
-        # 🎧 Record
-        audio = record_audio(duration)
-        recognizer = KaldiRecognizer(model, 16000)
-
-        recognizer.AcceptWaveform(audio.tobytes())
-        result = json.loads(recognizer.FinalResult())
+        # Transcribe audio
+        result = _model.transcribe(audio_path, language=language_code, fp16=False)
         recognized_text = result.get("text", "").strip()
+        detected_lang = result.get("language", user_lang)
 
-        # 🔤 Compare similarity
-        similarity = difflib.SequenceMatcher(None, text_to_read.lower(), recognized_text.lower()).ratio()
+        # Clean and compare
+        clean_expected = read_text.strip().lower()
+        clean_recognized = recognized_text.strip().lower()
 
-        print(f"🗣 Recognized: {recognized_text}")
-        print(f"🔁 Similarity: {similarity:.2f}")
+        # Compute similarity (Levenshtein-based)
+        similarity = SequenceMatcher(None, clean_expected, clean_recognized).ratio()
 
-        return recognized_text, similarity, lang
+        print(f'recognized_text : {recognized_text}')
+        print(f'detected_lang : {detected_lang}')
+        print(f'clean_expected : {clean_expected}')
+        print(f'clean_recognized : {clean_recognized}')
+        print(f'similarity : {similarity}')
+        return recognized_text, similarity, detected_lang
 
     except Exception as e:
-        print(f"❌ Speech recognition failed: {e}")
-        return "", 0.0, user_lang or "unknown"
+        print("Speech recognition error:", e)
+        return "", 0.0, user_lang

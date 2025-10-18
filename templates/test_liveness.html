@@ -1,185 +1,126 @@
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Liveness Detection</title>
-    <style>
-        body {
-            font-family: Tahoma, Arial, sans-serif;
-            text-align: center;
-            margin: 20px;
-            background-color: #f5f5f5;
-        }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        h1 {
-            color: #2c3e50;
-            margin-bottom: 20px;
-        }
-        video {
-            width: 100%;
-            max-width: 400px;
-            height: auto;
-            border: 2px solid #3498db;
-            border-radius: 8px;
-            margin: 10px auto;
-            display: block;
-        }
-        .info-panel {
-            background: #f8f9fa;
-            border-radius: 8px;
-            padding: 15px;
-            margin: 15px 0;
-            text-align: right;
-        }
-        .status-section {
-            margin: 20px 0;
-        }
-        .status-item {
-            display: flex;
-            justify-content: space-between;
-            margin: 10px 0;
-            padding: 8px;
-            background: #f1f8ff;
-            border-radius: 5px;
-        }
-        .status-label {
-            font-weight: bold;
-            color: #2c3e50;
-        }
-        .status-value {
-            color: #34495e;
-        }
-        #instruction {
-            font-size: 18px;
-            margin: 20px;
-            color: #e74c3c;
-            font-weight: bold;
-            min-height: 30px;
-        }
-        #countdown {
-            font-size: 24px;
-            font-weight: bold;
-            color: #e74c3c;
-            margin: 15px 0;
-        }
-        button {
-            padding: 12px 25px;
-            margin: 10px;
-            font-size: 16px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        #startBtn {
-            background: #27ae60;
-            color: white;
-        }
-        #startBtn:hover {
-            background: #219a52;
-        }
-        #resetBtn {
-            background: #e74c3c;
-            color: white;
-        }
-        #resetBtn:hover {
-            background: #c0392b;
-        }
-        button:disabled {
-            background: #bdc3c7;
-            cursor: not-allowed;
-        }
-        .result {
-            margin: 15px 0;
-            padding: 15px;
-            border-radius: 5px;
-            font-weight: bold;
-        }
-        .success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-        .error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-        .processing {
-            background: #d1ecf1;
-            color: #0c5460;
-            border: 1px solid #bee5eb;
-        }
-
-
-
-        /* Responsive scaling for mobile */
-        @media (max-width: 600px) {
-            .overlay {
-                width: 80%;
-                font-size: 14px;
-            }
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liveness Detection</title>
+  <style>
+    body {
+      font-family: Tahoma, Arial, sans-serif;
+      text-align: center;
+      margin: 20px;
+      background-color: #f5f5f5;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    h1 { color: #2c3e50; margin-bottom: 20px; }
+    video {
+      width: 100%;
+      max-width: 400px;
+      border: 2px solid #3498db;
+      border-radius: 8px;
+      display: block;
+      margin: 10px auto;
+    }
+    button {
+      padding: 12px 25px;
+      margin: 10px;
+      font-size: 16px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    #startBtn { background: #27ae60; color: white; }
+    #startBtn:hover { background: #219a52; }
+    #resetBtn { background: #e74c3c; color: white; }
+    #resetBtn:hover { background: #c0392b; }
+    button:disabled { background: #bdc3c7; cursor: not-allowed; }
+    .status-item {
+      display: flex;
+      justify-content: space-between;
+      margin: 10px 0;
+      padding: 8px;
+      background: #f1f8ff;
+      border-radius: 5px;
+    }
+    .status-label { font-weight: bold; color: #2c3e50; }
+    .status-value { color: #34495e; }
+    #instruction {
+      font-size: 18px;
+      margin: 20px;
+      color: #e74c3c;
+      font-weight: bold;
+      min-height: 30px;
+    }
+    #countdown {
+      font-size: 24px;
+      font-weight: bold;
+      color: #e74c3c;
+      margin: 15px 0;
+    }
+    .result {
+      margin: 15px 0;
+      padding: 15px;
+      border-radius: 5px;
+      font-weight: bold;
+    }
+    .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    .processing { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+  </style>
 </head>
 <body>
-<div class="container">
+  <div class="container">
     <h1>احراز هویت (Liveness Detection)</h1>
 
-    <div class="info-panel">
-        <div class="status-item">
-            <span class="status-label">وضعیت دوربین:</span>
-            <span class="status-value" id="cameraStatus">غیرفعال</span>
-        </div>
-    </div>
-    <div class="info-panel">
-        <div class="read-item">
-            <span class="read-label">این متن رو با صدا بلند  بخوانید:</span>
-            <span class="read-value" id="readingText">***</span>
-        </div>
+    <div class="status-item">
+      <span class="status-label">وضعیت دوربین:</span>
+      <span class="status-value" id="cameraStatus">غیرفعال</span>
     </div>
 
-    <div style="position: relative; display: inline-block;">
-      <video id="video" autoplay playsinline style="border-radius: 8px;"></video>
+    <div class="status-item">
+      <span class="status-label">این متن را با صدای بلند بخوانید:</span>
+      <span class="status-value" id="readingText">***</span>
     </div>
 
-    <div class="status-item" style="margin-top: 15px;">
+    <video id="video" autoplay playsinline></video>
+
+    <div class="status-item">
       <span class="status-label">زبان گفتار:</span>
-      <select id="languageSelect" class="status-value" style="padding: 6px; border-radius: 5px;">
-          <option value="auto">تشخیص خودکار</option>
-          <option value="fa" selected>فارسی 🇮🇷</option>
-          <option value="en">English 🇺🇸</option>
-          <option value="ar">العربية 🇸🇦</option>
-          <option value="tr">Türkçe 🇹🇷</option>
+      <select id="languageSelect" class="status-value">
+        <option value="auto">تشخیص خودکار</option>
+        <option value="fa" selected>فارسی 🇮🇷</option>
+        <option value="en">English 🇺🇸</option>
+        <option value="ar">العربية 🇸🇦</option>
+        <option value="tr">Türkçe 🇹🇷</option>
       </select>
     </div>
+
     <div id="instruction">برای شروع دکمه زیر را فشار دهید</div>
     <div id="countdown"></div>
 
-    <div class="status-section">
-        <div class="status-item">
-            <span class="status-label">وضعیت چالش:</span>
-            <span class="status-value" id="challengeStatus">آماده</span>
-        </div>
-        <div class="status-item">
-            <span class="status-label">پیشرفت:</span>
-            <span class="status-value" id="progressStatus">0%</span>
-        </div>
+    <div class="status-item">
+      <span class="status-label">وضعیت چالش:</span>
+      <span class="status-value" id="challengeStatus">آماده</span>
+    </div>
+
+    <div class="status-item">
+      <span class="status-label">پیشرفت:</span>
+      <span class="status-value" id="progressStatus">0%</span>
     </div>
 
     <div id="resultContainer"></div>
 
     <button id="startBtn">شروع تشخیص زنده‌بودن</button>
     <button id="resetBtn" disabled>بازنشانی</button>
-</div>
+  </div>
 
 <script>
     const video = document.getElementById('video');
@@ -198,36 +139,40 @@
     let audioChunks = [];
     let currentNonce = null;
     let expiresAt = null;
-    let stream;
+    let stream;              // ✅ Shared audio+video stream
     let intervalId;
     let countdownInterval;
     let remainingTime = 10;
     const canvas = document.createElement('canvas');
 
-    // Start webcam
+    // ✅ Start webcam + microphone
     async function startWebcam() {
         try {
             cameraStatus.textContent = "در حال راه‌اندازی...";
             stream = await navigator.mediaDevices.getUserMedia({
-            video: {
-                width: { ideal: window.innerWidth > 600 ? 640 : 320 },
-                height: { ideal: window.innerWidth > 600 ? 480 : 240 },
-                facingMode: "user"
-                }
+                video: {
+                    width: { ideal: window.innerWidth > 600 ? 640 : 320 },
+                    height: { ideal: window.innerWidth > 600 ? 480 : 240 },
+                    facingMode: "user"
+                },
+                audio: true // گرفتن صدا و تصویر با هم
             });
             video.srcObject = stream;
+            video.muted = true;
+            video.volume = 0;
             cameraStatus.textContent = "فعال";
             return true;
         } catch (err) {
-            console.error("Error accessing webcam:", err);
+            console.error("Error accessing webcam or mic:", err);
             cameraStatus.textContent = "خطا در دسترسی";
-            showResult("خطا در دسترسی به دوربین. لطفا مجوزها را بررسی کنید.", "error");
+            showResult("❌ خطا در دسترسی به دوربین یا میکروفن. لطفاً مجوزها را بررسی کنید.", "error");
             return false;
         }
     }
 
-    // Stop everything
+    // ✅ Stop everything
     function stopLiveness() {
+        console.log('stop liveness' +countdownInterval)
         if (stream) stream.getTracks().forEach(track => track.stop());
         if (intervalId) clearInterval(intervalId);
         if (countdownInterval) clearInterval(countdownInterval);
@@ -239,34 +184,14 @@
         cameraStatus.textContent = "غیرفعال";
         startBtn.disabled = false;
         resetBtn.disabled = true;
-        const response = fetch('/reset_attempts/', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ get_instruction: true })
-            });
+        fetch('/reset_attempts/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ get_instruction: true })
+        });
     }
 
-    // Stop everything
-    function no_time() {
-        if (stream) stream.getTracks().forEach(track => track.stop());
-        if (intervalId) clearInterval(intervalId);
-        if (countdownInterval) clearInterval(countdownInterval);
-        video.srcObject = null;
-        instructionDiv.textContent = "برای شروع دکمه زیر را فشار دهید";
-        countdownDiv.textContent = "";
-        challengeStatus.textContent = "آماده";
-        progressStatus.textContent = "0%";
-        cameraStatus.textContent = "غیرفعال";
-        startBtn.disabled = false;
-        resetBtn.disabled = true;
-        const response = fetch('/reset_attempts/', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ get_instruction: true })
-            });
-    }
-
-    // Countdown update
+    // ✅ Countdown update
     function updateCountdown() {
         countdownDiv.textContent = `زمان باقی‌مانده: ${remainingTime} ثانیه`;
         remainingTime--;
@@ -276,12 +201,12 @@
         }
     }
 
-    // Show result
+    // ✅ Show result message
     function showResult(message, type) {
         resultContainer.innerHTML = `<div class="result ${type}">${message}</div>`;
     }
 
-    // Get random instruction from server
+    // ✅ Fetch random instruction from server
     async function getInstruction() {
         try {
             const response = await fetch('/check_frame/', {
@@ -293,8 +218,8 @@
             instructionDiv.textContent = data.instruction || "دستور موجود نیست";
             currentNonce = data.nonce;
             expiresAt = new Date(data.expires);
-            readingText.textContent = data.read_text || "****"
-            console.log( data.read_text)
+            readingText.textContent = data.read_text || "***";
+            console.log("Reading text:", data.read_text);
             return data.instruction;
         } catch (err) {
             console.error("Error fetching instruction:", err);
@@ -303,14 +228,15 @@
         }
     }
 
-    // Send frames periodically
+    // ✅ Send frames periodically
     function startSendingFrames() {
         let frameIndex = 0;
 
         intervalId = setInterval(async () => {
             if (!video.videoWidth || !video.videoHeight) return;
 
-            canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
             canvas.getContext('2d').drawImage(video, 0, 0);
             const imgData = canvas.toDataURL('image/jpeg');
             const selectedLang = languageSelect.value;
@@ -322,6 +248,7 @@
                 frame_index: frameIndex++,
                 lang: selectedLang
             };
+
             try {
                 const resp = await fetch('/check_frame/', {
                     method: 'POST',
@@ -347,54 +274,73 @@
                 const progress = Math.min(100, Math.max(0, 100 - (remainingTime * 10)));
                 progressStatus.textContent = `${progress}%`;
 
-                if (resData.new_instruction) {
-                    instructionDiv.textContent = resData.new_instruction;
-                }
-                if (resData.instruction) {
-                    instructionDiv.textContent = resData.instruction;
-                }
+                if (resData.new_instruction) instructionDiv.textContent = resData.new_instruction;
+                if (resData.instruction) instructionDiv.textContent = resData.instruction;
+
             } catch (err) {
                 console.error("Error sending frame:", err);
                 showResult("خطا در ارسال داده به سرور", "error");
             }
-        }, 500);
+        }, 500, );
     }
 
+    // ✅ Unified voice recorder using same stream
     async function startVoiceChallenge() {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaRecorder = new MediaRecorder(stream);
-        audioChunks = [];
+        try {
+            if (!stream) {
+                alert("استریم فعال نیست، لطفاً ابتدا دوربین را فعال کنید.");
+                return;
+            }
 
-        mediaRecorder.addEventListener("dataavailable", e => {
-            audioChunks.push(e.data);
-        });
+            const audioTracks = stream.getAudioTracks();
+            if (!audioTracks.length) {
+                alert("هیچ مسیر صوتی در استریم یافت نشد.");
+                return;
+            }
 
-        mediaRecorder.addEventListener("stop", async () => {
-            const audioBlob = new Blob(audioChunks, { type: "audio/wav" });
-            const formData = new FormData();
-            const selectedLang = languageSelect.value;
+            const audioStream = new MediaStream(audioTracks);
+            mediaRecorder = new MediaRecorder(audioStream, { mimeType: "audio/webm" });
+            audioChunks = [];
 
-            formData.append("audio", audioBlob, "voice.wav");
-            formData.append("lang", selectedLang);
-            formData.append("nonce", currentNonce);
-
-            const response = await fetch("/check_voice/", {
-                method: "POST",
-                body: formData
+            mediaRecorder.addEventListener("dataavailable", e => {
+                if (e.data && e.data.size > 0) audioChunks.push(e.data);
             });
 
-            const data = await response.json();
+            mediaRecorder.addEventListener("stop", async () => {
+                const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+                const formData = new FormData();
+                const selectedLang = languageSelect.value;
 
-            alert(`Voice similarity: ${data.similarity * 100}%`);
-            console.log(`Voice similarity: ${data.similarity * 100}%`);
-        });
+                formData.append("audio", audioBlob, "voice.webm");
+                formData.append("lang", selectedLang);
+                formData.append("nonce", currentNonce);
 
-        mediaRecorder.start();
-        alert("Recording started for 10 seconds...");
-        setTimeout(() => mediaRecorder.stop(), 6000);
+                try {
+                    const response = await fetch("/check_voice/", {
+                        method: "POST",
+                        body: formData
+                    });
+                    const data = await response.json();
+                    alert(`تشابه صدا: ${(data.similarity * 100).toFixed(2)}٪`);
+                    console.log("Voice similarity:", data.similarity);
+                } catch (e) {
+                    console.error("Error sending voice:", e);
+                    alert("خطا در ارسال صدای ضبط‌شده");
+                }
+            });
+
+            mediaRecorder.start();
+            console.log("🎤 Recording started...");
+            setTimeout(() => {
+                try { mediaRecorder.stop(); } catch(e) { console.warn(e); }
+            }, 4000);
+        } catch (err) {
+            console.error("Error in startVoiceChallenge:", err);
+            alert("خطا در شروع ضبط صدا. لطفاً مجوز میکروفن را بررسی کنید.");
+        }
     }
 
-    // Start button
+    // ✅ Start button handler
     startBtn.addEventListener('click', async () => {
         startBtn.disabled = true;
         resetBtn.disabled = false;
@@ -416,16 +362,18 @@
         updateCountdown();
         countdownInterval = setInterval(updateCountdown, 1000);
         startSendingFrames();
-        startVoiceChallenge();
+        startVoiceChallenge(); // ✅ uses same stream
     });
 
-    // Reset button
+    // ✅ Reset button handler
     resetBtn.addEventListener('click', () => {
         stopLiveness();
         getInstruction();
         resultContainer.innerHTML = "";
         languageSelect.disabled = false;
-    })
+    });
 </script>
+
+
 </body>
 </html>
