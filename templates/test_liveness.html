@@ -296,6 +296,9 @@
                 if (resData.new_instruction) {
                     instructionDiv.textContent = resData.new_instruction;
                 }
+                if (resData.instruction) {
+                    instructionDiv.textContent = resData.instruction;
+                }
             } catch (err) {
                 console.error("Error sending frame:", err);
                 showResult("خطا در ارسال داده به سرور", "error");

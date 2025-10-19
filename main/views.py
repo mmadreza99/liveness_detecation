@@ -44,7 +44,7 @@ CHALLENGES = [
         "threshold": 25.0
     },
     {
-        "instruction": "چند بار پلک بزنید",
+        "instruction": "چند بار پلک بزنید.(به لنز نگاه کنید)",
         "type": "blink",
         "threshold": 3
     },
@@ -396,7 +396,8 @@ def check_frame(request):
         print('Processing . . . ')
 
         update_liveness_state(state)
-        return JsonResponse({"status": "Processing..."})
+        return JsonResponse({"status": "Processing...",
+                             "instruction": state["current_challenge"]["instruction"]})
 
     except Exception as e:
         print('error :', e)
