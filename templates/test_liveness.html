@@ -108,15 +108,53 @@
             color: #155724;
             border: 1px solid #c3e6cb;
         }
-        .error {
+        .video-container {
+            position: relative;
+            display: inline-block;
+            max-width: 460px; /* حداکثر اندازه برای دسکتاپ */
+            margin: 0 auto;
+        }
+        #instruction-overlay {
+            position: absolute;
+            top: 15px; /* فاصله از بالا تصویر */
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255, 255, 255, 0.34);
+            color: #950000;
+            padding: 8px 20px;
+            border-radius: 4px;
+            font-size: 15px;
+            font-weight: normal;
+            pointer-events: none; /* جلوگیری از تداخل کلیک */
+            width: 90%; /* در صفحه‌های کوچک، متن جمع‌وجور میشه */
+        }
+        video {
+            width: 100%;
+            height: auto;
+            aspect-ratio: 3/4; /* حفظ نسبت ارتفاع به عرض، مخصوصاً در موبایل‌ها */
+            border: 2px solid #3498db;
+            border-radius: 8px;
+            display: block;
+        }
+         .error {
             background: #f8d7da;
             color: #721c24;
             border: 1px solid #f5c6cb;
         }
-        .processing {
+         .processing {
             background: #d1ecf1;
             color: #0c5460;
             border: 1px solid #bee5eb;
+         }
+        /* برای صفحه‌های خیلی کوچک (موبایل‌ها) */
+        @media (max-width: 600px) {
+            .container {
+                padding: 10px;
+            }
+            #instruction-overlay {
+                font-size: 14px;
+                bottom: 5px;
+            }
         }
     </style>
 </head>
@@ -131,9 +169,11 @@
         </div>
     </div>
 
-    <video id="video" autoplay playsinline></video>
+    <div class="video-container">
+        <video id="video" autoplay playsinline></video>
+        <div id="instruction-overlay">برای شروع دکمه زیر را فشار دهید</div>
+    </div>
     <div id="countdown"></div>
-    <div id="instruction">برای شروع دکمه زیر را فشار دهید</div>
 
     <div class="status-section">
         <div class="status-item">
@@ -162,8 +202,11 @@
     const cameraStatus = document.getElementById('cameraStatus');
     const challengeStatus = document.getElementById('challengeStatus');
     const progressStatus = document.getElementById('progressStatus');
+    const instructionOverlay = document.getElementById('instruction-overlay');
 
-    let stream;
+    let currentNonce = null;
+    let expiresAt = null;
+    let stream;              // ✅ Shared audio+video stream
     let intervalId;
     let countdownInterval;
     let remainingTime = 10;
@@ -186,46 +229,26 @@
     }
 
     // Stop everything
-    function stopLiveness() {
+    function stopLiveness(challenges_status=null ) {
         if (stream) stream.getTracks().forEach(track => track.stop());
         if (intervalId) clearInterval(intervalId);
         if (countdownInterval) clearInterval(countdownInterval);
         video.srcObject = null;
-        instructionDiv.textContent = "برای شروع دکمه زیر را فشار دهید";
+        {#instructionDiv.textContent = "برای شروع دکمه زیر را فشار دهید";#}
         countdownDiv.textContent = "";
-        challengeStatus.textContent = "آماده";
+        challengeStatus.textContent = challenges_status || "آماده";
         progressStatus.textContent = "0%";
         cameraStatus.textContent = "غیرفعال";
         startBtn.disabled = false;
         resetBtn.disabled = true;
-        const response = fetch('/reset_attempts/', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ get_instruction: true })
-            });
+        fetch('/reset_attempts/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nonce: currentNonce })
+        });
     }
 
-    // Stop everything
-    function no_time() {
-        if (stream) stream.getTracks().forEach(track => track.stop());
-        if (intervalId) clearInterval(intervalId);
-        if (countdownInterval) clearInterval(countdownInterval);
-        video.srcObject = null;
-        instructionDiv.textContent = "برای شروع دکمه زیر را فشار دهید";
-        countdownDiv.textContent = "";
-        challengeStatus.textContent = "آماده";
-        progressStatus.textContent = "0%";
-        cameraStatus.textContent = "غیرفعال";
-        startBtn.disabled = false;
-        resetBtn.disabled = true;
-        const response = fetch('/reset_attempts/', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ get_instruction: true })
-            });
-    }
-
-    // Countdown update
+    // ✅ Countdown update
     function updateCountdown() {
         countdownDiv.textContent = `زمان باقی‌مانده: ${remainingTime} ثانیه`;
         remainingTime--;
@@ -249,17 +272,23 @@
                 body: JSON.stringify({ get_instruction: true })
             });
             const data = await response.json();
-            instructionDiv.textContent = data.instruction || "دستور موجود نیست";
+            currentNonce = data.nonce;
+            expiresAt = new Date(data.expires);
+            {#instructionDiv.textContent = data.instruction || "دستور موجود نیست";#}
+            instructionOverlay.textContent = data.instruction || "دستور موجود نیست";
             return data.instruction;
         } catch (err) {
             console.error("Error fetching instruction:", err);
-            instructionDiv.textContent = "خطا در بارگذاری دستور";
+            {#instructionDiv.textContent = "خطا در بارگذاری دستور";#}
+            instructionOverlay.textContent = "خطا در بارگذاری دستور";
             return null;
         }
     }
 
     // Send frames periodically
     function startSendingFrames() {
+        let frameIndex = 0;
+
         intervalId = setInterval(async () => {
             if (!video.videoWidth || !video.videoHeight) return;
 
@@ -268,11 +297,17 @@
             canvas.getContext('2d').drawImage(video, 0, 0);
             const imgData = canvas.toDataURL('image/jpeg');
 
+            const payload = {
+                image: imgData,
+                nonce: currentNonce,
+                client_time: new Date().toISOString(),
+                frame_index: frameIndex++,
+            };
             try {
                 const resp = await fetch('/check_frame/', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ image: imgData })
+                    body: JSON.stringify(payload)
                 });
                 const resData = await resp.json();
 
@@ -290,20 +325,22 @@
                     showResult("در حال تشخیص زنده‌بودن... لطفا دستور را دنبال کنید", "processing");
                 }
 
+                if (resData.error) {
+                    challengeStatus.textContent = resData.error || 'error';
+                    showResult(resData.error, "error");
+                    stopLiveness(resData.error);
+                }
+
                 const progress = Math.min(100, Math.max(0, 100 - (remainingTime * 10)));
                 progressStatus.textContent = `${progress}%`;
 
-                if (resData.new_instruction) {
-                    instructionDiv.textContent = resData.new_instruction;
-                }
-                if (resData.instruction) {
-                    instructionDiv.textContent = resData.instruction;
-                }
+                if (resData.new_instruction) instructionOverlay.textContent = resData.new_instruction;
+                if (resData.instruction) instructionOverlay.textContent = resData.instruction;
             } catch (err) {
                 console.error("Error sending frame:", err);
                 showResult("خطا در ارسال داده به سرور", "error");
             }
-        }, 500);
+        }, 300);
     }
 
     // Start button

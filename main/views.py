@@ -4,6 +4,8 @@ import random
 import base64
 import json
 import re
+from datetime import timedelta
+
 import numpy as np
 import cv2
 import mediapipe as mp
@@ -32,9 +34,9 @@ global_face_mesh = mp_face_mesh.FaceMesh(
 LEFT_EYE = [33, 160, 158, 133, 153, 144]
 RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 
-# Cache keys
-LIVENESS_STATE_KEY = "liveness_state"
-ATTEMPTS_KEY = "liveness_attempts"
+# تعریف بازه‌ی مجاز برای حالت روبه‌رو
+FRONT_YAW_RANGE = (-5, 5)    # حدود ۸ درجه چپ و راست مجاز
+FRONT_PITCH_RANGE = (-6, 6)  # حدود ۸ درجه بالا و پایین مجاز
 
 # چالش‌های تشخیص زنده‌بودن
 CHALLENGES = [
@@ -51,7 +53,7 @@ CHALLENGES = [
     {
         "instruction": "ابروهای خود را بالا ببرید",
         "type": "raise_eyebrows",
-        "threshold": 0.025
+        "threshold": 0.020
     }
 ]
 
@@ -61,31 +63,36 @@ class MyObject:
         self.y = y
 
 
-def get_liveness_state():
-    """Get or initialize liveness state (no attempt limit)"""
-    state = cache.get(LIVENESS_STATE_KEY, {
-        "last_check": timezone.now(),
-        "blink_count": 0,
+def create_challenge():
+    nonce = uuid.uuid4().hex
+    challenge = random.choice(CHALLENGES)
+    expires = timezone.now() + timedelta(seconds=15)  # کوتاه!
+    state = {
+        "nonce": nonce,
+        "challenge": challenge,
+        "expires": expires,
+        "created": timezone.now(),
+        "attempts": 0,
+        "challenge_data":{},
         "recent_poses": [],
-        "current_challenge": None,
-        "challenge_start": None,
-        "challenge_data": {},
-        "debug_images": [],
-        "result_raise_eyebrows": []
-    })
-
-    # Select a new challenge if none active
-    if state["current_challenge"] is None:
-        state["current_challenge"] = random.choice(CHALLENGES)
-        state["challenge_start"] = timezone.now()
-        state["challenge_data"] = {"blinks": 0, "pose_changes": []}
-
+        "result_raise_eyebrows": [],
+        "len_frame": 0,
+    }
+    cache.set(f"liveness_ch_{nonce}", state, timeout=30)
     return state
+
+
+def get_instruction(request=None):
+    st = create_challenge()
+    return {"instruction": st["challenge"]["instruction"],
+            "nonce": st["nonce"],
+            "expires": st["expires"].isoformat(),
+            }
 
 
 def update_liveness_state(state):
     """Update liveness state in cache"""
-    cache.set(LIVENESS_STATE_KEY, state, timeout=120)
+    cache.set(f"liveness_ch_{state['nonce']}", state, timeout=120)
 
 
 def base64_to_image(b64str):
@@ -107,10 +114,10 @@ def base64_to_image(b64str):
 def eye_aspect_ratio(landmarks, eye_indices):
     """Compute Eye Aspect Ratio (EAR) from Mediapipe landmarks"""
     p1, p2, p3, p4, p5, p6 = [landmarks[i] for i in eye_indices]
-    A = np.hypot(p2.x - p6.x, p2.y - p6.y)
-    B = np.hypot(p3.x - p5.x, p3.y - p5.y)
-    C = np.hypot(p1.x - p4.x, p1.y - p4.y)
-    return (A + B) / (2.0 * C) if C != 0 else 0.0
+    a = np.hypot(p2.x - p6.x, p2.y - p6.y)
+    b = np.hypot(p3.x - p5.x, p3.y - p5.y)
+    c = np.hypot(p1.x - p4.x, p1.y - p4.y)
+    return (a + b) / (2.0 * c) if c != 0 else 0.0
 
 
 def estimate_head_pose(landmarks, img_w, img_h):
@@ -254,10 +261,13 @@ def annotate_landmarks_and_encode(rgb_img, landmarks=None, boxes=None, labels=No
 
     # draw landmarks (simple circles)
     if landmarks:
+        overlay = vis.copy()
+        alpha = 0.5
         for lm in landmarks:
             x_px = int(lm.x * w)
             y_px = int(lm.y * h)
-            cv2.circle(vis, (x_px, y_px), 1, (0, 0, 255), 2)
+            cv2.circle(overlay, (x_px, y_px), 2, (0, 0, 255), -1)
+        cv2.addWeighted(overlay, alpha, vis, 1 - alpha, 0, vis)
 
     # label feature name
     if feature_name:
@@ -291,9 +301,9 @@ def check_frame(request):
         print('first touch')
         # Get instruction
         if "get_instruction" in data:
-            state = get_liveness_state()
-            print(f'if "get_instruction" in data  : {state["current_challenge"]["instruction"]}')
-            return JsonResponse({"instruction": state["current_challenge"]["instruction"]})
+            state = get_instruction(request)
+            print(f'if "get_instruction" in data  : {state["instruction"]}')
+            return JsonResponse(state)
 
         # Convert base64 → image
         img_data = data.get("image", "")
@@ -301,24 +311,38 @@ def check_frame(request):
             return JsonResponse({"error": "No image provided"}, status=400)
         print('img_data')
 
+        nonce = data.get("nonce")
+        if not nonce:
+            print('no nonce')
+            return JsonResponse({"error": "nonce required"}, status=400)
+
+        state = cache.get(f"liveness_ch_{nonce}")
+        if not state:
+            return JsonResponse({"error": "invalid or expired nonce"}, status=400)
+        if timezone.now() > state["expires"]:
+            print('expire')
+            return JsonResponse({"error": "nonce expired"}, status=400)
+
         rgb = base64_to_image(img_data)
         h, w = rgb.shape[:2]
         if max(h, w) > 800:
             scale = 800 / max(h, w)
             rgb = cv2.resize(rgb, (int(w * scale), int(h * scale)))
 
-        state = get_liveness_state()
-        challenge = state["current_challenge"]
+        challenge = state["challenge"]
         challenge_data = state["challenge_data"]
         recent_poses = state["recent_poses"]
         result_raise_eyebrows = state["result_raise_eyebrows"]
-        print(f'check instruction  : {state["current_challenge"]["instruction"]}')
+        print(f'check instruction  : {state["challenge"]["instruction"]}')
 
         results = global_face_mesh.process(rgb)
         now = timezone.now()
 
         if results.multi_face_landmarks:
             print(f'find face : ')
+            state["len_frame"] += 1
+            count = state['len_frame']
+            print(f'len _ frame : {count}')
             landmarks = results.multi_face_landmarks[0].landmark
             if challenge["type"] == "blink":
                 # Calculate blink
@@ -326,15 +350,14 @@ def check_frame(request):
                        eye_aspect_ratio(landmarks, RIGHT_EYE)) / 2.0
                 print('ear', ear)
 
-                if ear < 0.22:
+                if ear < 0.19:
                     challenge_data["blinks"] = challenge_data.get("blinks", 0) + 1
                     print('challenge_data["blinks"]', challenge_data["blinks"])
-                    ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, feature_name=f"blink_close_{ear}")
-                elif ear >= 0.23:
+                    ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, feature_name=f"blink_close_{count}_{ear}")
+                elif ear >= 0.19:
                     challenge_data["blinks_open"] = challenge_data.get("blinks_open", 0) + 1
                     print('challenge_data["blinks_open"]', challenge_data["blinks_open"])
-                    ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, feature_name=f"blink_open_{ear}")
-                state["debug_images"].append(ann)
+                    ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, feature_name=f"blink_open_{count}_{ear}")
             elif challenge["type"] == "head_turn":
                 # Head pose estimation
                 pose = estimate_head_pose(landmarks, rgb.shape[1], rgb.shape[0])
@@ -344,22 +367,32 @@ def check_frame(request):
                 yaw = abs(pose[1])
                 labels = [f"yaw:{yaw:.1f}"]
                 ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, labels=labels,
-                                                    feature_name="head_turn")
-                state["debug_images"].append(ann)
+                                                    feature_name=f"head_turn__{count}")
+                if "front_frame" not in state or abs(yaw) < abs(state["front_pose"][1]):
+                    state["front_pose"] = pose
+                    ann = annotate_landmarks_and_encode(rgb, feature_name=f"front_frame_{count}_pose:{pose}")
+
+                    # تصویر را به base64 ذخیره کن تا در حافظه بماند
+                    success, buf = cv2.imencode('.jpg', cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+                    if success:
+                        b64_image = "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode('utf-8')
+                        state["front_frame"] = b64_image
+                        print("✅ Front-facing frame captured in memory")
             elif challenge["type"] == "raise_eyebrows":
                 avg_distance ,new_landmark = detect_raised_eyebrows(landmarks)
                 result_raise_eyebrows.append(avg_distance)
 
                 labels = [f"raise_eyebrows: {avg_distance}"]
                 ann = annotate_landmarks_and_encode(rgb,  landmarks=new_landmark ,labels=labels,
-                                                    feature_name=f"raise_eyebrows-{avg_distance}")
-                state["debug_images"].append(ann)
+                                                    feature_name=f"raise_eyebrows-{count}-{avg_distance}")
         else:
+            annotate_landmarks_and_encode(rgb, feature_name=f"not_find_face")
             print(f'not find face : ')
 
         # Every 10s check success
-        if (now - state["last_check"]).seconds >= 10:
+        if (now - state["created"]).seconds >= 10:
             success = False
+
             if challenge["type"] == "blink":
                 success = (challenge_data.get("blinks", 0) >= challenge["threshold"]
                            and challenge_data.get("blinks_open", 0) >= challenge["threshold"])
@@ -379,25 +412,27 @@ def check_frame(request):
 
             if success:
                 status = "✅ Alive - Challenge completed"
-                state["current_challenge"] = random.choice(CHALLENGES)
+                state["challenge"] = random.choice(CHALLENGES)
                 state["challenge_data"] = {"blinks": 0, "pose_changes": []}
-                new_instruction = state["current_challenge"]["instruction"]
+                new_instruction = state["challenge"]["instruction"]
             else:
                 status = "⚠️ Challenge not detected - Try again"
                 new_instruction = challenge["instruction"]
 
             state.update({
-                "last_check": now,
+                "created": now,
                 "recent_poses": [],
                 "challenge_data": challenge_data
             })
             update_liveness_state(state)
-            return JsonResponse({"status": status, "new_instruction": new_instruction})
+            return JsonResponse({"status": status,
+                                 "new_instruction": new_instruction,
+                                 })
         print('Processing . . . ')
 
         update_liveness_state(state)
         return JsonResponse({"status": "Processing...",
-                             "instruction": state["current_challenge"]["instruction"]})
+                             "instruction": state["challenge"]["instruction"],})
 
     except Exception as e:
         print('error :', e)
@@ -406,58 +441,64 @@ def check_frame(request):
 
 @csrf_exempt
 def upload_passport_and_verify(request):
-    """Endpoint to verify identity by comparing passport and live images"""
+    """
+    Verify identity by comparing passport photo with the best front-facing live frame.
+    This version uses only in-memory (RAM) data — no I/O or file storage.
+    """
     if request.method != "POST":
-        return JsonResponse({"error": "This endpoint accepts POST requests"}, status=405)
+        return JsonResponse({"error": "This endpoint accepts POST requests only"}, status=405)
 
     try:
         data = json.loads(request.body)
         passport_b64 = data.get("passport_image")
-        live_b64 = data.get("live_image")
 
-        if not passport_b64 or not live_b64:
-            return JsonResponse({"error": "Both passport_image and live_image are required"}, status=400)
+        # Load the last liveness session state from cache
+        state = cache.get("liveness_state", {})
+        front_b64 = state.get("front_frame")
 
-        # Convert images
+        if not passport_b64:
+            return JsonResponse({"error": "passport_image is required"}, status=400)
+
+        if not front_b64:
+            return JsonResponse({
+                "error": "No front-facing frame captured yet. Please complete liveness check first."
+            }, status=400)
+
+        # Decode both images (base64 → OpenCV RGB)
         passport_img = base64_to_image(passport_b64)
-        live_img = base64_to_image(live_b64)
+        live_img = base64_to_image(front_b64)
 
-        # Face recognition
+        # Detect faces in both images
         passport_locations = face_recognition.face_locations(passport_img)
         live_locations = face_recognition.face_locations(live_img)
 
         if not passport_locations:
-            return JsonResponse({"error": "No face found in passport image"}, status=400)
+            return JsonResponse({"error": "No face detected in passport image"}, status=400)
         if not live_locations:
-            return JsonResponse({"error": "No face found in live image"}, status=400)
+            return JsonResponse({"error": "No face detected in live (front) frame"}, status=400)
 
+        # Compute face encodings
         passport_enc = face_recognition.face_encodings(passport_img, known_face_locations=passport_locations)[0]
         live_enc = face_recognition.face_encodings(live_img, known_face_locations=live_locations)[0]
 
-        # Compute similarity
+        # Compare faces using Euclidean distance
         dist = np.linalg.norm(passport_enc - live_enc)
-        SIMILARITY_THRESHOLD = 0.55
+        SIMILARITY_THRESHOLD = 0.55  # smaller = stricter, larger = more lenient
         match = dist < SIMILARITY_THRESHOLD
 
-        # Single-frame liveness check
-        with mp_face_mesh.FaceMesh(
-                static_image_mode=True,
-                max_num_faces=1,
-                refine_landmarks=True,
-                min_detection_confidence=0.6
-        ) as fm:
-            res = fm.process(live_img)
-            liveness_hint = "Face detected (single-shot) - recommend multi-frame liveness check" if res.multi_face_landmarks else "No face detected"
+        # Prepare output values
+        confidence = max(0.0, (1 - dist / SIMILARITY_THRESHOLD)) * 100 if match else 0.0
 
         return JsonResponse({
-            "distance": float(dist),
             "match": bool(match),
+            "distance": float(dist),
             "threshold": SIMILARITY_THRESHOLD,
-            "liveness_hint": liveness_hint,
-            "confidence": f"{(1 - dist / SIMILARITY_THRESHOLD) * 100:.1f}%" if match else "0%"
+            "confidence": f"{confidence:.1f}%",
+            "message": "✅ Identity verified" if match else "⚠️ Faces do not match",
         })
 
     except Exception as e:
+        print("Error in upload_passport_and_verify:", str(e))
         return JsonResponse({"error": str(e)}, status=500)
 
 
@@ -469,6 +510,11 @@ def liveness_test(request):
 @csrf_exempt
 def reset_attempts(request):
     """Reset attempts counter (for testing)"""
-    cache.delete(LIVENESS_STATE_KEY)
-    cache.delete(ATTEMPTS_KEY)
+    data = json.loads(request.body)
+    nonce = data.get("nonce")
+    if not nonce:
+        print('no nonce')
+        return JsonResponse({"error": "nonce required"}, status=400)
+
+    cache.delete(f"liveness_ch_{nonce}")
     return JsonResponse({"status": "Attempts reset successfully"})
