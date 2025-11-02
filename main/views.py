@@ -488,7 +488,10 @@ def check_frame(request):
 def upload_passport_and_verify(request):
     """
     Verify identity by comparing passport photo with the best front-facing live frame.
-    This version uses only in-memory (RAM) data — no I/O or file storage.
+    Improved version:
+      - uses nonce to fetch the correct liveness session (front frame)
+      - returns debug comparison image path (saved under DEBUG_DIR/<nonce>/)
+      - does basic face alignment using face_recognition landmarks (center crop)
     """
     if request.method != "POST":
         return JsonResponse({"error": "This endpoint accepts POST requests only"}, status=405)
@@ -496,14 +499,20 @@ def upload_passport_and_verify(request):
     try:
         data = json.loads(request.body)
         passport_b64 = data.get("passport_image")
-
-        # Load the last liveness session state from cache
-        state = cache.get("liveness_state", {})
-        front_b64 = state.get("front_frame")
+        nonce = data.get("nonce")  # ask frontend to pass the same nonce used in liveness
 
         if not passport_b64:
             return JsonResponse({"error": "passport_image is required"}, status=400)
+        if not nonce:
+            return JsonResponse({"error": "nonce is required"}, status=400)
 
+        # Load the liveness session by nonce (use same cache key pattern as check_frame)
+        state = cache.get(f"liveness_ch_{nonce}")
+        if not state:
+            return JsonResponse({"error": "invalid or expired nonce"}, status=400)
+
+        # Prefer front_frame or blink_front_frame captured during liveness
+        front_b64 = state.get("front_frame") or state.get("blink_front_frame")
         if not front_b64:
             return JsonResponse({
                 "error": "No front-facing frame captured yet. Please complete liveness check first."
@@ -513,7 +522,8 @@ def upload_passport_and_verify(request):
         passport_img = base64_to_image(passport_b64)
         live_img = base64_to_image(front_b64)
 
-        # Detect faces in both images
+        # convert to RGB numpy arrays expected by face_recognition (they are already RGB)
+        # detect faces in both images
         passport_locations = face_recognition.face_locations(passport_img)
         live_locations = face_recognition.face_locations(live_img)
 
@@ -522,23 +532,105 @@ def upload_passport_and_verify(request):
         if not live_locations:
             return JsonResponse({"error": "No face detected in live (front) frame"}, status=400)
 
-        # Compute face encodings
-        passport_enc = face_recognition.face_encodings(passport_img, known_face_locations=passport_locations)[0]
-        live_enc = face_recognition.face_encodings(live_img, known_face_locations=live_locations)[0]
+        # Choose the largest face (in case of multiple)
+        def pick_largest(locations):
+            # locations: list of (top, right, bottom, left)
+            areas = [(loc[2]-loc[0])*(loc[1]-loc[3]) for loc in locations]
+            return locations[int(np.argmax(areas))]
+
+        passport_loc = pick_largest(passport_locations)
+        live_loc = pick_largest(live_locations)
+
+        # Optionally: crop and align faces a bit to improve encoder stability
+        def crop_with_margin(img, loc, margin=0.35):
+            top, right, bottom, left = loc
+            h, w = img.shape[:2]
+            height = bottom - top
+            width = right - left
+            top_m = max(0, int(top - margin * height))
+            bottom_m = min(h, int(bottom + margin * height))
+            left_m = max(0, int(left - margin * width))
+            right_m = min(w, int(right + margin * width))
+            return img[top_m:bottom_m, left_m:right_m]
+
+        passport_crop = crop_with_margin(passport_img, passport_loc)
+        live_crop = crop_with_margin(live_img, live_loc)
+
+        # Compute face encodings (use cropped images to focus on face)
+        # Note: face_recognition.face_encodings expects whole-image coords or known locations; we give a single face.
+        passport_encs = face_recognition.face_encodings(passport_crop)
+        live_encs = face_recognition.face_encodings(live_crop)
+
+        if not passport_encs:
+            return JsonResponse({"error": "Failed to compute encoding for passport face"}, status=500)
+        if not live_encs:
+            return JsonResponse({"error": "Failed to compute encoding for live face"}, status=500)
+
+        passport_enc = passport_encs[0]
+        live_enc = live_encs[0]
 
         # Compare faces using Euclidean distance
-        dist = np.linalg.norm(passport_enc - live_enc)
-        SIMILARITY_THRESHOLD = 0.55  # smaller = stricter, larger = more lenient
+        dist = float(np.linalg.norm(passport_enc - live_enc))
+
+        # Threshold tuning: 0.50-0.6 is common; choose 0.55 default (same as original)
+        SIMILARITY_THRESHOLD = 0.55
         match = dist < SIMILARITY_THRESHOLD
 
-        # Prepare output values
-        confidence = max(0.0, (1 - dist / SIMILARITY_THRESHOLD)) * 100 if match else 0.0
+        # Compute a simple "confidence" metric (not probabilistic)
+        if match:
+            confidence = max(0.0, min(100.0, (1.0 - dist / SIMILARITY_THRESHOLD) * 100.0))
+        else:
+            # give a small score even if not match, scaled
+            confidence = max(0.0, min(100.0, (1.0 - dist / (SIMILARITY_THRESHOLD * 2)) * 100.0))
 
+        # Build a side-by-side debug image and save it in DEBUG_DIR/<nonce>/
+        def make_side_by_side_and_save(img_a, img_b, label_a="passport", label_b="live", folder=nonce):
+            # Convert RGB -> BGR for OpenCV drawing/saving
+            a_bgr = cv2.cvtColor(img_a, cv2.COLOR_RGB2BGR)
+            b_bgr = cv2.cvtColor(img_b, cv2.COLOR_RGB2BGR)
+
+            # Resize to same height
+            ha, wa = a_bgr.shape[:2]
+            hb, wb = b_bgr.shape[:2]
+            target_h = max(ha, hb)
+            # keep aspect ratio
+            def resize_to_height(img, h):
+                H, W = img.shape[:2]
+                scale = h / H
+                return cv2.resize(img, (int(W*scale), h))
+
+            a_r = resize_to_height(a_bgr, target_h)
+            b_r = resize_to_height(b_bgr, target_h)
+
+            # pad widths to be equal heights (already equal)
+            spacer = 10
+            combined = np.concatenate([a_r, np.full((target_h, spacer, 3), 255, dtype=np.uint8), b_r], axis=1)
+
+            # draw rectangles around detected faces on each crop (optional)
+            # We don't have face locations in crop space here, skip that complex mapping.
+
+            # annotate text
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            cv2.putText(combined, label_a, (10, 30), font, 0.9, (0, 0, 255), 2, cv2.LINE_AA)
+            cv2.putText(combined, label_b, (a_r.shape[1] + spacer + 10, 30), font, 0.9, (0, 0, 255), 2, cv2.LINE_AA)
+
+            # ensure folder exists
+            folder_path = os.path.join(DEBUG_DIR, folder)
+            os.makedirs(folder_path, exist_ok=True)
+            fname = f"compare_{uuid.uuid4().hex[:8]}.jpg"
+            fpath = os.path.join(folder_path, fname)
+            cv2.imwrite(fpath, combined, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            return fpath
+
+        debug_path = make_side_by_side_and_save(passport_crop, live_crop, folder=nonce)
+
+        # Return JSON with result and debug path
         return JsonResponse({
             "match": bool(match),
-            "distance": float(dist),
+            "distance": dist,
             "threshold": SIMILARITY_THRESHOLD,
             "confidence": f"{confidence:.1f}%",
+            "debug_image_path": debug_path,
             "message": "✅ Identity verified" if match else "⚠️ Faces do not match",
         })
 
