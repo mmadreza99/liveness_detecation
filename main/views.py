@@ -35,27 +35,43 @@ LEFT_EYE = [33, 160, 158, 133, 153, 144]
 RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 
 # تعریف بازه‌ی مجاز برای حالت روبه‌رو
-FRONT_YAW_RANGE = (-5, 5)    # حدود ۸ درجه چپ و راست مجاز
-FRONT_PITCH_RANGE = (-6, 6)  # حدود ۸ درجه بالا و پایین مجاز
+FRONT_YAW_RANGE = (-4, 4)    # حدود ۸ درجه چپ و راست مجاز
+FRONT_PITCH_RANGE = (-4, 4)  # حدود ۸ درجه بالا و پایین مجاز
 
 # چالش‌های تشخیص زنده‌بودن
-CHALLENGES = [
+COMBO_CHALLENGES = [
     {
         "instruction": "سر خود را به چپ و راست بچرخانید",
-        "type": "head_turn",
-        "threshold": 25.0
+        "type": ["head_turn"],
+        "thresholds": [25.0]
     },
     {
         "instruction": "چند بار پلک بزنید.(به لنز نگاه کنید)",
-        "type": "blink",
-        "threshold": 3
+        "type": ["blink"],
+        "thresholds": [3]
     },
     {
         "instruction": "ابروهای خود را بالا ببرید",
-        "type": "raise_eyebrows",
-        "threshold": 0.020
-    }
+        "type": ["raise_eyebrows"],
+        "thresholds": [0.020]
+    },
+    {
+        "instruction": "در حالی که سرت را به چپ و راست می‌چرخانی چند بار پلک بزن",
+        "type": ["head_turn", "blink"],  # ✅ دو نوع همزمان
+        "thresholds": [25.0, 3]
+    },
+    {
+        "instruction": "در حالی که سرت را به چپ و راست می‌چرخانی ابروهای خود را بالا ,پایین ببرید",
+        "type": ["head_turn", "raise_eyebrows"],  # ✅ دو نوع همزمان
+        "thresholds": [25.0, 0.020]
+    },
+    {
+        "instruction": "در حالی که ابروهای خود را بالا ,پایین ببرید, چند بار پلک بزنید.(به لنز نگاه کنید)",
+        "type": ["blink", "raise_eyebrows"],  # ✅ دو نوع همزمان
+        "thresholds": [3, 0.020]
+    },
 ]
+
 
 class MyObject:
     def __init__(self, x, y ):
@@ -65,7 +81,7 @@ class MyObject:
 
 def create_challenge():
     nonce = uuid.uuid4().hex
-    challenge = random.choice(CHALLENGES)
+    challenge = random.choice(COMBO_CHALLENGES)
     expires = timezone.now() + timedelta(seconds=15)  # کوتاه!
     state = {
         "nonce": nonce,
@@ -238,7 +254,7 @@ def detect_raised_eyebrows(landmarks):
     return avg_distance ,new_landmark
 
 
-def annotate_landmarks_and_encode(rgb_img, landmarks=None, boxes=None, labels=None, feature_name=None):
+def annotate_landmarks_and_encode(rgb_img, landmarks=None, boxes=None, labels=None, feature_name=None, folder=None):
     """
     Draw landmarks, boxes and labels on a copy of rgb_img and return base64 and filepath.
     - landmarks: list of mediapipe landmark objects (or None)
@@ -278,9 +294,17 @@ def annotate_landmarks_and_encode(rgb_img, landmarks=None, boxes=None, labels=No
     if not success:
         raise RuntimeError("Failed to encode debug image")
 
-    # create unique filename
+
+    # 🟢 Create per-user/request folder (based on nonce or fallback)
+    folder = folder or "unknown_request"
+    folder_path = os.path.join(DEBUG_DIR, folder)
+    os.makedirs(folder_path, exist_ok=True)
+
+    # 🟢 Generate unique file name
     fname = f"{feature_name or 'feat'}_{uuid.uuid4().hex[:8]}.jpg"
-    fpath = os.path.join(DEBUG_DIR, fname)
+    fpath = os.path.join(folder_path, fname)
+
+    # Save the image
     with open(fpath, "wb") as f:
         f.write(buf.tobytes())
 
@@ -344,7 +368,7 @@ def check_frame(request):
             count = state['len_frame']
             print(f'len _ frame : {count}')
             landmarks = results.multi_face_landmarks[0].landmark
-            if challenge["type"] == "blink":
+            if "blink" in challenge["type"]:
                 # Calculate blink
                 ear = (eye_aspect_ratio(landmarks, LEFT_EYE) +
                        eye_aspect_ratio(landmarks, RIGHT_EYE)) / 2.0
@@ -353,12 +377,22 @@ def check_frame(request):
                 if ear < 0.19:
                     challenge_data["blinks"] = challenge_data.get("blinks", 0) + 1
                     print('challenge_data["blinks"]', challenge_data["blinks"])
-                    ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, feature_name=f"blink_close_{count}_{ear}")
-                elif ear >= 0.19:
+                    annotate_landmarks_and_encode(rgb, landmarks=landmarks,
+                                                  feature_name=f"blink_close_{count}_{ear}", folder=nonce)
+                else:
                     challenge_data["blinks_open"] = challenge_data.get("blinks_open", 0) + 1
                     print('challenge_data["blinks_open"]', challenge_data["blinks_open"])
-                    ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, feature_name=f"blink_open_{count}_{ear}")
-            elif challenge["type"] == "head_turn":
+                    annotate_landmarks_and_encode(rgb, landmarks=landmarks, feature_name=f"blink_open_{count}_{ear}",
+                                                  folder=nonce)
+                    if "blink_front_frame" not in state or abs(ear) > abs(state["ear"]):
+                        state["ear"] = ear
+                        # تصویر را به base64 ذخیره کن تا در حافظه بماند
+                        success, buf = cv2.imencode('.jpg', cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+                        if success:
+                            b64_image = "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode('utf-8')
+                            state["blink_front_frame"] = b64_image
+                            print("✅ [blink_front_frame] Front-facing frame captured in memory")
+            if "head_turn" in challenge["type"]:
                 # Head pose estimation
                 pose = estimate_head_pose(landmarks, rgb.shape[1], rgb.shape[0])
                 recent_poses.append(pose)
@@ -366,67 +400,78 @@ def check_frame(request):
 
                 yaw = abs(pose[1])
                 labels = [f"yaw:{yaw:.1f}"]
-                ann = annotate_landmarks_and_encode(rgb, landmarks=landmarks, labels=labels,
-                                                    feature_name=f"head_turn__{count}")
-                if "front_frame" not in state or abs(yaw) < abs(state["front_pose"][1]):
-                    state["front_pose"] = pose
-                    ann = annotate_landmarks_and_encode(rgb, feature_name=f"front_frame_{count}_pose:{pose}")
+                annotate_landmarks_and_encode(rgb, landmarks=landmarks, labels=labels,
+                                              feature_name=f"head_turn__{count}", folder=nonce)
 
-                    # تصویر را به base64 ذخیره کن تا در حافظه بماند
-                    success, buf = cv2.imencode('.jpg', cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-                    if success:
-                        b64_image = "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode('utf-8')
-                        state["front_frame"] = b64_image
-                        print("✅ Front-facing frame captured in memory")
-            elif challenge["type"] == "raise_eyebrows":
+                if (FRONT_YAW_RANGE[0] < yaw < FRONT_YAW_RANGE[1]
+                        and FRONT_PITCH_RANGE[0] < pose[2] < FRONT_PITCH_RANGE[1]) :
+                    if "front_frame" not in state or abs(yaw) < abs(state["front_pose"][1]):
+                        state["front_pose"] = pose
+                        annotate_landmarks_and_encode(rgb, feature_name=f"front_frame_{count}_pose:{pose}", folder=nonce)
+
+                        # تصویر را به base64 ذخیره کن تا در حافظه بماند
+                        success, buf = cv2.imencode('.jpg', cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+                        if success:
+                            b64_image = "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode('utf-8')
+                            state["front_frame"] = b64_image
+                            print("✅ Front-facing frame captured in memory")
+            if "raise_eyebrows" in challenge["type"]:
                 avg_distance ,new_landmark = detect_raised_eyebrows(landmarks)
                 result_raise_eyebrows.append(avg_distance)
 
                 labels = [f"raise_eyebrows: {avg_distance}"]
                 ann = annotate_landmarks_and_encode(rgb,  landmarks=new_landmark ,labels=labels,
-                                                    feature_name=f"raise_eyebrows-{count}-{avg_distance}")
+                                                    feature_name=f"raise_eyebrows-{count}-{avg_distance}", folder=nonce)
         else:
-            annotate_landmarks_and_encode(rgb, feature_name=f"not_find_face")
+            annotate_landmarks_and_encode(rgb, feature_name=f"not_find_face", folder=nonce)
             print(f'not find face : ')
 
         # Every 10s check success
         if (now - state["created"]).seconds >= 10:
-            success = False
+            types = challenge["type"]
+            thresholds = challenge["thresholds"]
+            print(f'types {types}')
+            results = []
 
-            if challenge["type"] == "blink":
-                success = (challenge_data.get("blinks", 0) >= challenge["threshold"]
-                           and challenge_data.get("blinks_open", 0) >= challenge["threshold"])
-                print('result blink: ', challenge_data.get("blinks", 0), challenge_data.get("blinks_open", 0))
-            elif challenge["type"] == "head_turn":
-                yaw_changes = [p[1] for p in recent_poses]
-                if len(yaw_changes) >= 2:
-                    success = (max(yaw_changes) - min(yaw_changes)) > challenge["threshold"]
-                print(f'result head_turn: , len {len(yaw_changes)},threshold {max(yaw_changes) - min(yaw_changes)}')
-            elif challenge["type"] == "raise_eyebrows":
-                min_val = min(result_raise_eyebrows)
-                max_val = max(result_raise_eyebrows)
-                diff = max_val - min_val
+            for t in types:
+                if t == "blink":
+                    blinks = challenge_data.get("blinks", 0)
+                    blinks_open = challenge_data.get("blinks_open", 0)
+                    results.append(blinks >= thresholds[types.index(t)] and blinks_open >= thresholds[types.index(t)])
+                    print(f'blink    c={blinks}, o={blinks_open}, {thresholds[types.index(t)]}')
+                elif t == "head_turn":
+                    yaw_changes = [p[1] for p in recent_poses]
+                    if len(yaw_changes) >= 2:
+                        diff = max(yaw_changes) - min(yaw_changes)
+                        results.append(diff > thresholds[types.index(t)])
+                        print(f'head_turn    diff={diff},  {thresholds[types.index(t)]}')
 
-                success = diff > challenge["threshold"]
-                print(f'result {success} diff {diff:.4f} min_val-{min_val:.4f}-max_val_{max_val:.4f}')
+                elif t == "raise_eyebrows":
+                    if result_raise_eyebrows:
+                        min_val = min(result_raise_eyebrows)
+                        max_val = max(result_raise_eyebrows)
+                        diff = max_val - min_val
+                        results.append(diff > thresholds[types.index(t)])
+                        print(f'raise_eyebrows  diff={diff} | min_val={min_val}, max_val={max_val},  {thresholds[types.index(t)]}')
 
+            print(f'result: {results} ')
+            success = all(results)
             if success:
                 status = "✅ Alive - Challenge completed"
-                state["challenge"] = random.choice(CHALLENGES)
-                state["challenge_data"] = {"blinks": 0, "pose_changes": []}
-                new_instruction = state["challenge"]["instruction"]
             else:
                 status = "⚠️ Challenge not detected - Try again"
-                new_instruction = challenge["instruction"]
+
+            new_challenge = random.choice(COMBO_CHALLENGES)
+            state["challenge"] = new_challenge
 
             state.update({
                 "created": now,
                 "recent_poses": [],
-                "challenge_data": challenge_data
+                "challenge_data": {"blinks": 0, "pose_changes": []}
             })
             update_liveness_state(state)
             return JsonResponse({"status": status,
-                                 "new_instruction": new_instruction,
+                                 "new_instruction": new_challenge['instruction'],
                                  })
         print('Processing . . . ')
 
